@@ -1,0 +1,107 @@
+# Astrbot Python SDK
+
+AstrBot（`github.com/WaterGodFurina/Astrbot-golang`）的 Python 插件 SDK。
+
+Python 插件以 **gRPC 子进程**方式接入 Go 宿主（Astrbot-golang），与 Go 插件
+（`WaterGodFurina/Astrbot-go-plugin-sdk`）能力等价：命令 / 过滤器 / 钩子 /
+LLM 工具 / LLM 请求钩子 / 结果钩子 / HostService 反向调用。
+
+**关键特性：同一份插件代码双端运行**——本 SDK 提供与 Python AstrBot 本体
+**同名同构**的 `astrbot` 包。插件源码零修改：
+
+- 在 **Python AstrBot 本体**中运行：import 到真正的 `astrbot` 包
+- 在 **Go 宿主**（Astrbot-golang）中以 gRPC 子进程方式运行：import 到本 SDK
+  （`PYTHONPATH` 优先注入本 SDK 目录）
+
+## 插件开发
+
+```python
+# main.py
+from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.star import Context, Star, register
+
+@register("hello_plugin", "示例插件", "演示", "1.0.0")
+class HelloPlugin(Star):
+    def __init__(self, context: Context, config: dict = None):
+        super().__init__(context, config)
+
+    @filter.command("hello")
+    async def hello(self, event: AstrMessageEvent):
+        yield event.plain_result("Hello from Python!")
+
+    @filter.llm_tool(name="py_add")
+    async def add(self, event: AstrMessageEvent, a: int, b: int) -> str:
+        """加法工具。
+
+        Args:
+            a (int): 第一个数
+            b (int): 第二个数
+        """
+        return str(a + b)
+
+    @filter.on_llm_request()
+    async def llm_req(self, event: AstrMessageEvent, req):
+        req.system_prompt += "你是一个猫娘。"
+```
+
+插件包结构（与 Python AstrBot 插件一致）：
+
+```
+插件目录/
+├── main.py                  # 插件入口（或含 __init__.py 的包）
+├── metadata.json            # {name, desc, author, version, "language": "python"}
+├── _conf_schema.json        # 配置 schema（WebUI 配置对话框）
+├── requirements.txt         # 依赖（宿主自动 pip 安装到 venv）
+└── README.md
+```
+
+## 支持的 API
+
+- `from astrbot.api.event import filter, AstrMessageEvent`：全部装饰器
+  （`command` / `command_group` / `regex` / `custom_filter` / `permission_type` /
+  `event_message_type` / `platform_adapter_type` / `llm_tool` / `on_llm_request` /
+  `on_decorating_result` / `on_llm_response` / `on_using_llm_tool` /
+  `on_llm_tool_respond` / `on_waiting_llm_request` / `on_agent_begin` /
+  `on_agent_done` / `on_astrbot_loaded` / `on_platform_loaded` /
+  `on_plugin_loaded` / `on_plugin_unloaded` / `on_plugin_error` /
+  `after_message_sent`）
+- `from astrbot.api.star import Context, Star, register`
+- `from astrbot.api import logger`
+- 消息组件：`Plain` / `Image` / `At` / `AtAll` / `Record` / `Video` / `File` /
+  `Face` / `Reply` / `Json` / `Nodes` / `Node` / `Forward` / `Poke` 等
+- `event.plain_result()` / `event.image_result()` / `event.chain_result()` /
+  `event.stop_event()` / `event.request_llm()` / `event.send()` / yield 多轮回复
+- `self.context.get_config()` / `send_message()` / `llm_generate()` /
+  `get_llm_tool_manager()`
+
+## 运行机制
+
+宿主（Astrbot-golang ≥ 含 Python SDK 支持版本）启动 Python 插件：
+
+1. 检测解释器：`ASTRBOT_PYTHON_BIN` > PATH `python3` > **自动下载
+   python-build-standalone**（无系统 Python 时，见宿主文档）
+2. 创建 venv 并安装 `grpcio` / `protobuf`（缓存于 `~/.cache/astrbot-go/`）
+3. `python3 -m astrbot._bridge.server <插件目录>` 启动子进程
+4. go-plugin 握手 + gRPC（`PluginService` + `plugin.GRPCBroker`），
+   与 Go 插件走同一 RPC 契约，宿主侧完全透明
+
+## 开发与测试
+
+```bash
+python3 -m venv .venv && . .venv/bin/activate
+pip install grpcio protobuf grpcio-tools
+python tests/run_tests.py          # 单元测试
+python -m grpc_tools.protoc -Iproto \
+  --python_out=astrbot/_bridge/gen --grpc_python_out=astrbot/_bridge/gen \
+  proto/plugin.proto proto/goplugin.proto   # 重新生成 gRPC 代码
+```
+
+`proto/` 目录：`plugin.proto`（PluginService/HostService，与 Go SDK 共享）、
+`goplugin.proto`（go-plugin 的 GRPCBroker 服务）。
+
+## 仓库
+
+- Python SDK（本仓库）：`github.com/WaterGodFurina/astrbot-python-sdk`
+- Go 宿主：`github.com/WaterGodFurina/Astrbot-golang`
+- Go 插件 SDK：`github.com/WaterGodFurina/Astrbot-go-plugin-sdk`
+- Python AstrBot 参考实现：`github.com/AstrBotDevs/AstrBot`

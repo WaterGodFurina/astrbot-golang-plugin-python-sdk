@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "astrbot-python-sdk"
+version = "1.0.0"
+description = "AstrBot (Go) Python 插件 SDK：Python 插件以 gRPC 子进程接入 Go 宿主"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    "grpcio>=1.50",
+    "protobuf>=4.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["astrbot*"]
