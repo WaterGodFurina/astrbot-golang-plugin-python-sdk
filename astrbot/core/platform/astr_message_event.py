@@ -249,16 +249,44 @@ class AstrMessageEvent(abc.ABC):
         await bridge.send_message(self.session, message)
 
     async def react(self, emoji: str) -> None:
-        """对当前消息添加表情回应（宿主不支持时忽略）。"""
+        """对当前消息添加表情回应（宿主 PlatformManager.React，平台不支持时
+        返回失败并告警）。"""
         from astrbot.core.star.context import get_host_bridge
 
         bridge = get_host_bridge()
         if bridge is None:
+            logger.warning("react(): 宿主桥未就绪")
             return
-        await bridge.react_message(self, emoji)
+        try:
+            ok = await bridge.react_message(self, emoji)
+            if not ok:
+                logger.warning(f"react(): 平台不支持表情回应或消息不存在（emoji={emoji}）")
+        except Exception as e:
+            logger.warning(f"react() 失败: {e}")
 
     async def get_group(self, group_id: str | None = None, **kwargs) -> Group | None:
-        return None
+        """获取群信息（经宿主 CallAction；平台不支持时返回 None）。"""
+        from astrbot.core.star.context import get_host_bridge
+
+        bridge = get_host_bridge()
+        if bridge is None:
+            return None
+        gid = group_id or self.get_group_id()
+        if not gid:
+            return None
+        try:
+            info = await bridge.call_action_async(
+                self.session.platform_id, "get_group_info", {"group_id": int(gid) if str(gid).isdigit() else gid}
+            )
+            if not info:
+                return None
+            return Group(
+                group_id=str(info.get("group_id", gid)),
+                group_name=info.get("group_name") or info.get("name") or "",
+            )
+        except Exception as e:
+            logger.warning(f"get_group({gid}) 失败: {e}")
+            return None
 
     @classmethod
     def from_event_json(cls, data: dict) -> "AstrMessageEvent":

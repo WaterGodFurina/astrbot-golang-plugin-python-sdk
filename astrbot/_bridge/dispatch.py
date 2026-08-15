@@ -97,6 +97,28 @@ def _bind(handler, inst):
     return handler
 
 
+def _fit_hook_args(handler, event=None, payload=None):
+    """按 handler 声明的参数个数截断传参（对齐 Python 本体语义：
+    on_astrbot_loaded/on_platform_loaded 无参，on_plugin_loaded 传 metadata，
+    on_llm_response 传 event+response 等）。多余参数不传，避免
+    "takes N positional arguments but M were given"。"""
+    try:
+        sig = inspect.signature(handler)
+        n = sum(
+            1
+            for p in sig.parameters.values()
+            if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        )
+    except (ValueError, TypeError):
+        n = 1
+    args = []
+    if n >= 1 and event is not None:
+        args.append(event)
+    if n >= 2 and payload is not None:
+        args.append(payload)
+    return args
+
+
 class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
     def __init__(self, plugin_name: str, plugin_version: str, plugin_desc: str, plugin_author: str, plugin_dir: str = ""):
         self.plugin_name = plugin_name
@@ -170,7 +192,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         # llm_tools
         from astrbot.core.provider.func_tool_manager import llm_tools
 
-        for tool in llm_tools.list_funcs():
+        for tool in llm_tools.list_funcs(only_active=True):
             self.tools[tool.name] = (tool, self.inst)
 
     # ---- RPC 实现 ----
@@ -210,7 +232,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
             resp.hooks.append(plugin_pb2.HookDesc(name=name, event=event))
         from astrbot.core.provider.func_tool_manager import llm_tools
 
-        for tool in llm_tools.list_funcs():
+        for tool in llm_tools.list_funcs(only_active=True):
             params = tool.parameters or {"type": "object", "properties": {}}
             if not isinstance(params, dict):
                 params = {"type": "object", "properties": {}}
@@ -391,10 +413,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
 
         bound = _bind(handler, inst)
         try:
-            if payload is not None:
-                results = _call(bound, event, payload)
-            else:
-                results = _call(bound, event)
+            results = _call(bound, *_fit_hook_args(bound, event, payload))
         except Exception as e:
             logger.error(f"钩子 {request.name} ({event_name}) 执行失败: {e}")
             return resp
@@ -418,7 +437,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         )
         bound = _bind(handler, inst)
         try:
-            results = _call(bound, event, req)
+            results = _call(bound, *_fit_hook_args(bound, event, req))
         except Exception as e:
             logger.error(f"LLM 请求钩子 {request.name} 执行失败: {e}")
             return resp

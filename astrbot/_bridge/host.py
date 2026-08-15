@@ -84,17 +84,44 @@ class HostBridge:
         )
         return True
 
-    def chat_llm(self, prompt: str, system_prompt: str = "") -> str:
+    def chat_llm(self, prompt: str, system_prompt: str = "", image_urls: list[str] | None = None) -> str:
         if not self.ensure_connected():
             raise RuntimeError("宿主桥未就绪（ChatLLM 不可用）")
         resp = self._stub.ChatLLM(
             plugin_pb2.ChatLLMRequest(
                 prompt=prompt,
                 system_prompt=system_prompt,
+                image_urls=image_urls or [],
             ),
             timeout=180,
         )
         return resp.text
+
+    def react(self, platform: str, session_id: str, message_id: str, emoji: str) -> bool:
+        if not self.ensure_connected():
+            return False
+        self._stub.React(
+            plugin_pb2.ReactRequest(
+                platform=platform,
+                session_id=session_id,
+                message_id=message_id,
+                emoji=emoji,
+            ),
+            timeout=30,
+        )
+        return True
+
+    def text_to_image(self, text: str, template_name: str = "") -> bytes:
+        """宿主 t2i 渲染文本为图片，返回 PNG 字节。"""
+        if not self.ensure_connected():
+            raise RuntimeError("宿主桥未就绪（TextToImage 不可用）")
+        resp = self._stub.TextToImage(
+            plugin_pb2.TextToImageRequest(text=text, template_name=template_name),
+            timeout=120,
+        )
+        import base64
+
+        return base64.b64decode(resp.image_base64)
 
     def send_message(self, session, chain) -> bool:
         """发送消息链。session 为 MessageSession 或 MessageChain。"""
@@ -131,6 +158,9 @@ class HostBridge:
         data = json.loads(resp.result_json)
         return data if isinstance(data, dict) else {"data": data}
 
+    async def call_action_async(self, platform: str, api: str, params: dict) -> dict:
+        return self.call_action(platform, api, params)
+
     def recall_message(self, platform: str, message_id: str) -> bool:
         if not self.ensure_connected():
             return False
@@ -140,8 +170,15 @@ class HostBridge:
         )
         return True
 
-    async def react_message(self, event, emoji: str) -> None:
-        logger.debug(f"react_message 由宿主侧处理（平台支持时）；emoji={emoji}")
+    async def react_message(self, event, emoji: str) -> bool:
+        """给事件消息添加表情回应（宿主 React RPC）。"""
+        from astrbot.core.platform.message_type import MessageType
+
+        msg_id = getattr(event.message_obj, "message_id", "") if event.message_obj else ""
+        if not msg_id:
+            return False
+        session = event.session
+        return self.react(session.platform_id, session.session_id, msg_id, emoji)
 
 
 _bridge: HostBridge | None = None

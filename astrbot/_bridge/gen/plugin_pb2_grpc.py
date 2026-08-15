@@ -459,6 +459,16 @@ class HostServiceStub:
                 request_serializer=plugin__pb2.ChatLLMRequest.SerializeToString,
                 response_deserializer=plugin__pb2.ChatLLMResponse.FromString,
                 _registered_method=True)
+        self.React = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/React',
+                request_serializer=plugin__pb2.ReactRequest.SerializeToString,
+                response_deserializer=plugin__pb2.Empty.FromString,
+                _registered_method=True)
+        self.TextToImage = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/TextToImage',
+                request_serializer=plugin__pb2.TextToImageRequest.SerializeToString,
+                response_deserializer=plugin__pb2.TextToImageResponse.FromString,
+                _registered_method=True)
 
 
 class HostServiceServicer:
@@ -507,6 +517,21 @@ class HostServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def React(self, request, context):
+        """React adds an emoji reaction to a message (platforms supporting it).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def TextToImage(self, request, context):
+        """TextToImage renders text into an image (host t2i engine) and returns the
+        PNG bytes (base64). The plugin can then send it as an Image component.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_HostServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -539,6 +564,16 @@ def add_HostServiceServicer_to_server(servicer, server):
                     servicer.ChatLLM,
                     request_deserializer=plugin__pb2.ChatLLMRequest.FromString,
                     response_serializer=plugin__pb2.ChatLLMResponse.SerializeToString,
+            ),
+            'React': grpc.unary_unary_rpc_method_handler(
+                    servicer.React,
+                    request_deserializer=plugin__pb2.ReactRequest.FromString,
+                    response_serializer=plugin__pb2.Empty.SerializeToString,
+            ),
+            'TextToImage': grpc.unary_unary_rpc_method_handler(
+                    servicer.TextToImage,
+                    request_deserializer=plugin__pb2.TextToImageRequest.FromString,
+                    response_serializer=plugin__pb2.TextToImageResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -704,6 +739,60 @@ class HostService:
             '/astrbot.sdk.v1.HostService/ChatLLM',
             plugin__pb2.ChatLLMRequest.SerializeToString,
             plugin__pb2.ChatLLMResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def React(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/React',
+            plugin__pb2.ReactRequest.SerializeToString,
+            plugin__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def TextToImage(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/TextToImage',
+            plugin__pb2.TextToImageRequest.SerializeToString,
+            plugin__pb2.TextToImageResponse.FromString,
             options,
             channel_credentials,
             insecure,

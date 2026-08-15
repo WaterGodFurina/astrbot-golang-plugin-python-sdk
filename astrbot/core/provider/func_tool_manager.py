@@ -83,6 +83,7 @@ class FuncTool:
         self.parameters = parameters
         self.description = description
         self.handler = handler
+        self.active = True  # activate_llm_tool / deactivate_llm_tool 控制
 
     def to_schema(self) -> dict:
         schema = {
@@ -129,8 +130,24 @@ class FunctionToolManager:
                 return f
         return None
 
-    def list_funcs(self) -> list[FuncTool]:
-        return list(self.func_list)
+    def activate(self, name: str) -> bool:
+        for f in self.func_list:
+            if f.name == name:
+                f.active = True
+                return True
+        return False
+
+    def deactivate(self, name: str) -> bool:
+        for f in self.func_list:
+            if f.name == name:
+                f.active = False
+                return True
+        return False
+
+    def list_funcs(self, only_active: bool = False) -> list[FuncTool]:
+        if not only_active:
+            return list(self.func_list)
+        return [f for f in self.func_list if f.active]
 
 
 llm_tools = FunctionToolManager()

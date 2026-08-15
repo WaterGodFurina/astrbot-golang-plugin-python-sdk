@@ -47,6 +47,8 @@ class Context:
         # provider_manager 占位：插件可能读取 personas 等属性（对齐 Python 本体）
         self.provider_manager: Any = _PlaceholderProviderManager()
         self.persona_mgr: Any = _PlaceholderProviderManager()
+        # register_task 跟踪的任务（terminate 时取消）
+        self._tasks: list[Any] = []
 
     def _bridge(self):
         if _host_bridge is None:
@@ -85,8 +87,8 @@ class Context:
             logger.warning(f"send_message 失败: {e}")
             return False
 
-    async def chat_llm(self, prompt: str, system_prompt: str = "") -> str:
-        return await self._bridge().chat_llm(prompt, system_prompt)
+    async def chat_llm(self, prompt: str, system_prompt: str = "", image_urls: list[str] | None = None) -> str:
+        return await self._bridge().chat_llm(prompt, system_prompt, image_urls)
 
     async def llm_generate(
         self,
@@ -100,7 +102,7 @@ class Context:
         contexts: list | None = None,
         **kwargs,
     ) -> Any:
-        """调用 LLM 生成回复（宿主 ChatLLM：默认 chat provider）。"""
+        """调用 LLM 生成回复（宿主 ChatLLM：默认 chat provider，支持图片）。"""
         from astrbot.core.provider.entities import LLMResponse
 
         if prompt is None:
@@ -109,7 +111,7 @@ class Context:
             last = contexts[-1] if isinstance(contexts[-1], dict) else None
             if last and last.get("content"):
                 prompt = str(last["content"]) + "\n" + prompt
-        text = await self._bridge().chat_llm(prompt, system_prompt or "")
+        text = await self._bridge().chat_llm(prompt, system_prompt or "", image_urls or [])
         resp = LLMResponse(role="assistant")
         from astrbot.core.message.message_event_result import MessageChain
         from astrbot.core.message.components import Plain
@@ -123,19 +125,34 @@ class Context:
         return llm_tools
 
     def activate_llm_tool(self, name: str) -> bool:
-        return True
+        from astrbot.core.provider.func_tool_manager import llm_tools
+
+        return llm_tools.activate(name)
 
     async def activate_llm_tool_async(self, name: str) -> bool:
-        return True
+        return self.activate_llm_tool(name)
 
     def deactivate_llm_tool(self, name: str) -> bool:
-        return True
+        from astrbot.core.provider.func_tool_manager import llm_tools
+
+        return llm_tools.deactivate(name)
 
     async def deactivate_llm_tool_async(self, name: str) -> bool:
-        return True
+        return self.deactivate_llm_tool(name)
 
     def register_task(self, task, desc: str) -> None:
+        """登记插件任务（asyncio Task / awaitable），插件卸载（terminate）时取消。"""
+        self._tasks.append(task)
         logger.info(f"register_task: {desc}")
+
+    def cancel_all_tasks(self) -> None:
+        """取消并清理全部登记任务（宿主卸载插件时调用）。"""
+        import asyncio
+
+        for task in self._tasks:
+            if isinstance(task, asyncio.Task) and not task.done():
+                task.cancel()
+        self._tasks.clear()
 
     def get_event_queue(self):
         return None

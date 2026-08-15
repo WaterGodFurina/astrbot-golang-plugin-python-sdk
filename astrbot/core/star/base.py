@@ -58,9 +58,27 @@ class Star(CommandParserMixin, PluginKVStoreMixin):
             star_map[cls.__module__].module_path = cls.__module__
 
     async def text_to_image(self, text: str, return_url=True) -> str:
-        raise NotImplementedError(
-            "text_to_image 在 Go 宿主兼容运行时中不可用（宿主未提供 t2i RPC）。"
-        )
+        """将文本转换为图片（宿主 t2i 渲染）。
+
+        返回图片的 base64（data:image/png;base64,...）或本地临时文件路径。
+        """
+        if not text.strip():
+            raise ValueError("text_to_image 的文本不能为空")
+        from astrbot._bridge.host import get_bridge
+
+        try:
+            png = get_bridge().text_to_image(text, "")
+        except Exception as e:
+            logger.warning(f"text_to_image 失败: {e}")
+            raise
+        if not return_url:
+            import base64
+
+            return base64.b64encode(png).decode()
+        # 返回 data URL，插件可直接作为 Image 组件发送
+        import base64
+
+        return "data:image/png;base64," + base64.b64encode(png).decode()
 
     async def html_render(
         self,
@@ -70,7 +88,7 @@ class Star(CommandParserMixin, PluginKVStoreMixin):
         options: dict | None = None,
     ) -> str:
         raise NotImplementedError(
-            "html_render 在 Go 宿主兼容运行时中不可用。"
+            "html_render 在 Go 宿主兼容运行时中不可用（宿主无 HTML 模板渲染引擎）。"
         )
 
     async def initialize(self) -> None:
