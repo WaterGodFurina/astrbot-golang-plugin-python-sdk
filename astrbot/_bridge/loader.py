@@ -19,6 +19,42 @@ def sanitize_module_name(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.\-]", "_", name)
 
 
+def _load_package_plugin(plugin_dir: str, pkg_name: str):
+    """包式插件加载（插件目录含 __init__.py，Python AstrBot 生态惯例）：
+
+    把插件目录作为包（<sanitized 目录名>），main.py 作为包内子模块加载，
+    使 main.py 中的相对导入（from .backend.xxx import ...）可用。
+    返回 main 模块。
+    """
+    import importlib.util
+
+    pkg = sanitize_module_name(pkg_name)
+    if not pkg or not re.match(r"^[A-Za-z_]\w*$", pkg):
+        # 目录名不适合做模块名（数字开头等）→ 加前缀
+        pkg = "astrbot_plugin_" + pkg
+
+    init_path = os.path.join(plugin_dir, "__init__.py")
+    pkg_spec = importlib.util.spec_from_file_location(
+        pkg, init_path, submodule_search_locations=[plugin_dir]
+    )
+    if pkg_spec is None or pkg_spec.loader is None:
+        raise ImportError(f"无法加载插件包 {pkg_name}")
+    pkg_mod = importlib.util.module_from_spec(pkg_spec)
+    sys.modules[pkg] = pkg_mod
+    pkg_spec.loader.exec_module(pkg_mod)
+
+    main_path = os.path.join(plugin_dir, "main.py")
+    main_spec = importlib.util.spec_from_file_location(
+        f"{pkg}.main", main_path, submodule_search_locations=None
+    )
+    if main_spec is None or main_spec.loader is None:
+        raise ImportError(f"插件 {pkg_name} 缺少 main.py")
+    main_mod = importlib.util.module_from_spec(main_spec)
+    sys.modules[f"{pkg}.main"] = main_mod
+    main_spec.loader.exec_module(main_mod)
+    return main_mod
+
+
 def load_plugin(plugin_dir: str, context: Context) -> StarMetadata | None:
     """import 插件并实例化其 Star 类。
 
@@ -27,21 +63,31 @@ def load_plugin(plugin_dir: str, context: Context) -> StarMetadata | None:
     plugin_dir = os.path.abspath(plugin_dir)
     if not os.path.isdir(plugin_dir):
         raise FileNotFoundError(f"插件目录不存在: {plugin_dir}")
-    sys.path.insert(0, plugin_dir)
 
-    # 优先 import main.py，其次 import 目录名
-    module = None
-    if os.path.exists(os.path.join(plugin_dir, "main.py")):
-        module = importlib.import_module("main")
-    elif os.path.exists(os.path.join(plugin_dir, "__init__.py")):
-        module = importlib.import_module(sanitize_module_name(os.path.basename(plugin_dir)))
+    is_package = os.path.exists(os.path.join(plugin_dir, "__init__.py"))
+    has_main_py = os.path.exists(os.path.join(plugin_dir, "main.py"))
+
+    if is_package and has_main_py:
+        # 包式插件（Python AstrBot 生态惯例）：目录名.main，相对导入可用。
+        # 父目录进 sys.path 供包内 import 使用。
+        sys.path.insert(0, os.path.dirname(plugin_dir))
+        module = _load_package_plugin(plugin_dir, os.path.basename(plugin_dir))
     else:
-        for name in ("main", "plugin", os.path.basename(plugin_dir)):
-            if os.path.exists(os.path.join(plugin_dir, f"{name}.py")) or os.path.isdir(
-                os.path.join(plugin_dir, name)
-            ):
-                module = importlib.import_module(sanitize_module_name(name))
-                break
+        # 简单插件：main.py 或同名包作为顶层模块
+        sys.path.insert(0, plugin_dir)
+        if has_main_py:
+            module = importlib.import_module("main")
+        elif os.path.exists(os.path.join(plugin_dir, "__init__.py")):
+            module = importlib.import_module(sanitize_module_name(os.path.basename(plugin_dir)))
+        else:
+            for name in ("main", "plugin", os.path.basename(plugin_dir)):
+                if os.path.exists(os.path.join(plugin_dir, f"{name}.py")) or os.path.isdir(
+                    os.path.join(plugin_dir, name)
+                ):
+                    module = importlib.import_module(sanitize_module_name(name))
+                    break
+            else:
+                module = None
     if module is None:
         raise ImportError(f"无法在 {plugin_dir} 找到插件入口（main.py 或同名包）")
 

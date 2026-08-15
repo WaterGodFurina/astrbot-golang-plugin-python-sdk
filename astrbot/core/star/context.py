@@ -24,6 +24,19 @@ def get_host_bridge():
     return _host_bridge
 
 
+class _PlaceholderProviderManager:
+    """占位 provider 管理器：插件可能读取 provider_manager.personas /
+    persona_configs（Python 本体常驻），Go 宿主暂不提供人格列表，返回空。"""
+
+    @property
+    def personas(self) -> list:
+        return []
+
+    @property
+    def persona_configs(self) -> list:
+        return []
+
+
 class Context:
     """插件上下文：宿主能力代理。"""
 
@@ -31,6 +44,9 @@ class Context:
         self._config: AstrBotConfig | None = None
         self.plugin_name: str = ""
         self.plugin_id: str = ""
+        # provider_manager 占位：插件可能读取 personas 等属性（对齐 Python 本体）
+        self.provider_manager: Any = _PlaceholderProviderManager()
+        self.persona_mgr: Any = _PlaceholderProviderManager()
 
     def _bridge(self):
         if _host_bridge is None:
@@ -149,5 +165,13 @@ class Context:
     def register_commands(self, command: dict) -> None:
         pass
 
-    def register_web_api(self, route: str, handler) -> None:
-        logger.warning("register_web_api 在 Go 宿主兼容运行时中不可用")
+    def register_web_api(
+        self,
+        route: str,
+        handler,
+        methods: list | None = None,
+        desc: str = "",
+    ) -> None:
+        logger.warning(
+            f"register_web_api({route}) 在 Go 宿主兼容运行时中不可用（WebUI 插件页面暂未提供）"
+        )

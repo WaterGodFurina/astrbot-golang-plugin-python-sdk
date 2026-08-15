@@ -99,6 +99,12 @@ class StarHandlerRegistry:
     def all(self) -> list[StarHandlerMetadata]:
         return list(self._handlers)
 
+    def __iter__(self):
+        return iter(self._handlers)
+
+    def __len__(self) -> int:
+        return len(self._handlers)
+
     def clear(self) -> None:
         self._handlers.clear()
         self.star_handlers_map.clear()
