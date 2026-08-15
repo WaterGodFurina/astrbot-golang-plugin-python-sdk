@@ -1,6 +1,7 @@
 """PluginService 实现：宿主 RPC → Python 插件 handler。"""
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import logging
@@ -126,6 +127,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         self.plugin_desc = plugin_desc
         self.plugin_author = plugin_author
         self.plugin_dir = plugin_dir
+        self.web_apis: list[tuple] = []  # (route, handler, methods, desc) 由 server 注入
         # plugin_id -> Star 实例（loader 填充）
         self.inst: object | None = None
         # 命令注册：完整命令名/别名 -> (CommandFilter, handler)
@@ -242,6 +244,11 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                     description=tool.description or "",
                     params_json=json.dumps(params).encode(),
                 )
+            )
+        # Web APIs（context.register_web_api）
+        for route, _, methods, desc in self.web_apis:
+            resp.web_apis.append(
+                plugin_pb2.WebApiDesc(route=route, methods=list(methods), description=desc)
             )
         return resp
 
@@ -491,6 +498,154 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
     def HealthCheck(self, request, context) -> plugin_pb2.HealthResponse:
         return plugin_pb2.HealthResponse(ok=True, version=self.plugin_version)
 
+    def HandleWebRequest(self, request, context) -> plugin_pb2.HandleWebRequestResponse:
+        """宿主 /api/plug/<plugin_path> 网关转发来的 HTTP 请求。
+
+        按插件注册的 route（含动态 <param> 段）匹配，构造 FakeQuartRequest 并
+        注入 quart 全局 request（_cv_request），然后执行 handler。
+        """
+        import re as _re
+
+        path = request.path
+        if not path.startswith("/"):
+            path = "/" + path
+        method = request.method.upper()
+
+        for route, handler, methods, _ in self.web_apis:
+            if method not in [m.upper() for m in methods]:
+                continue
+            pattern, names = self._web_route_pattern(route)
+            if pattern is None:
+                continue
+            m = pattern.match(path)
+            if not m:
+                continue
+            path_params = {n: m.group(n) for n in names if m.groupdict().get(n) is not None}
+            try:
+                result = self._run_web_handler(handler, request, path_params)
+            except Exception as e:
+                logger.error(f"Web API {route} 执行失败: {e}")
+                import traceback
+
+                logger.debug(traceback.format_exc())
+                return plugin_pb2.HandleWebRequestResponse(
+                    status_code=500,
+                    body=json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False).encode(),
+                )
+            return self._serialize_web_result(result)
+        return plugin_pb2.HandleWebRequestResponse(status_code=404)
+
+    @staticmethod
+    def _web_route_pattern(route: str):
+        import re as _re
+
+        route = route if route.startswith("/") else "/" + route
+        names: list[str] = []
+        parts = []
+        for seg in route.split("/"):
+            if not seg:
+                continue
+            m = _re.fullmatch(r"<([^>]+)>", seg)
+            if m:
+                name = m.group(1)
+                names.append(name)
+                parts.append(f"(?P<{name}>[^/]+)")
+            else:
+                parts.append(_re.escape(seg))
+        try:
+            return _re.compile("^" + "/" + "/".join(parts) + "$"), names
+        except _re.error:
+            return None, names
+
+    def _run_web_handler(self, handler, req: plugin_pb2.HandleWebRequestRequest, path_params: dict):
+        """构造 FakeQuartRequest（对齐 quart 全局 request 接口），注入
+        quart._cv_request 与 astrbot.api.web.request 上下文，执行 handler。"""
+        import asyncio
+
+        from astrbot.api.web import PluginRequest, PluginUploadFile, bind_request_context
+
+        # 拆 query（含 multipart 表单字段已在宿主侧并入 query）
+        query_pairs: list[tuple[str, str]] = [(kv.key, kv.value) for kv in req.query]
+        headers = {kv.key: kv.value for kv in req.headers}
+        files: list[tuple[str, PluginUploadFile]] = [
+            (f.field, PluginUploadFile(f.filename, f.content_type, f.content))
+            for f in req.files
+        ]
+        pname = self.plugin_name
+        plugin_req = PluginRequest(
+            method=req.method,
+            path=req.path,
+            query=query_pairs,
+            headers=headers,
+            body=req.body,
+            files=files,
+            path_params=path_params,
+            plugin_name=pname,
+        )
+
+        fake = FakeQuartRequest(plugin_req, path_params)
+        # 注入 quart 全局（插件代码 from quart import request/jsonify/session 等）
+        try:
+            from quart.globals import _cv_app, _cv_request
+
+            _cv_app.set(FakeQuartAppCtx())
+            _cv_request.set(fake)
+        except Exception:
+            pass
+
+        with bind_request_context(plugin_req):
+            args = []
+            sig_params = list(inspect.signature(handler).parameters.values())
+            positional = [
+                p for p in sig_params
+                if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            ]
+            bound = _bind(handler, self.inst)
+            # 路径参数按名解包（Python 本体：view_handler(**path_values)）
+            kwargs = dict(path_params)
+            results = _call(bound, *args, **kwargs)
+            return results[-1] if results else None
+
+    @staticmethod
+    def _serialize_web_result(result):
+        """把 handler 返回值转成宿主响应：dict→json、quart Response→
+        (status, headers, body)、(resp, status) 元组。"""
+        import json as _json
+
+        status = 200
+        headers: dict[str, str] = {}
+        body: bytes = b""
+
+        if isinstance(result, tuple) and len(result) >= 2 and isinstance(result[1], int):
+            result, status = result
+        if result is None:
+            body = b""
+        elif isinstance(result, dict):
+            body = _json.dumps(result, ensure_ascii=False).encode("utf-8")
+            headers.setdefault("Content-Type", "application/json")
+        elif isinstance(result, str):
+            body = result.encode("utf-8")
+            headers.setdefault("Content-Type", "text/plain; charset=utf-8")
+        elif hasattr(result, "status_code") and hasattr(result, "get_data"):
+            # quart Response（jsonify/make_response/send_file 产物）
+            # 注意：quart 的 get_data() 是 async（asgi 模型），需同步执行。
+            status = int(result.status_code)
+            try:
+                data = result.get_data()
+                if inspect.iscoroutine(data):
+                    data = asyncio.run(data)
+                body = data if isinstance(data, bytes) else str(data).encode()
+            except Exception:
+                body = getattr(result, "body", b"")
+            for k, v in getattr(result, "headers", {}).items():
+                headers[str(k)] = str(v)
+        else:
+            body = str(result).encode("utf-8")
+        resp = plugin_pb2.HandleWebRequestResponse(status_code=status, body=body)
+        for k, v in headers.items():
+            resp.headers.append(plugin_pb2.WebKV(key=k, value=v))
+        return resp
+
     def Cleanup(self, request, context) -> plugin_pb2.Empty:
         from astrbot._bridge.loader import terminate_plugin
         from astrbot.core.star.star import star_map
@@ -505,3 +660,224 @@ def component_to_json_public(comp) -> dict:
     from astrbot._bridge.serialize import component_to_json
 
     return component_to_json(comp)
+
+
+class FakeQuartRequest:
+    """模拟 quart 全局 request（插件 handler 常 `from quart import request`）。
+
+    对齐插件代码使用的接口：method/path/headers/args/form/files/get_json/
+    json/max_content_length/cookies/query_string/url/endpoint/host/range/
+    accept/content_type 等。
+    """
+
+    def __init__(self, plugin_req, path_params: dict):
+        self._pr = plugin_req
+        self.path_params = path_params
+        self.method = plugin_req.method
+        self.path = plugin_req.path
+        self.url = plugin_req.path
+        self.full_path = plugin_req.path
+        self.query_string = ""
+        self.endpoint = plugin_req.path
+        self.host = ""
+        self.remote_addr = plugin_req.client_host or ""
+        self.max_content_length = 64 * 1024 * 1024
+        self.headers = FakeHeaders(plugin_req.headers)
+        self.cookies = plugin_req.cookies
+        self.content_type = plugin_req.content_type
+        self.args = FakeMultiDict([(k, v) for k, v in plugin_req.query.multi_items()])
+        self._files = plugin_req._files_cache
+        self._form = plugin_req._form_cache
+        self._body = plugin_req._raw_body
+        # quart 的 request 代理是 _cv_request.get().request —— 需要提供
+        # .request 属性（返回自身），否则 qreq.args 等访问到 None。
+        self.request = self
+        # quart 其他全局（session/g）由插件自持，不在本模拟范围。
+        self.session = None
+        self.g = None
+
+    async def get_data(self, *a, **k):
+        return self._body
+
+    async def get_json(self, *a, **k):
+        import json as _json
+
+        try:
+            return _json.loads(self._body.decode("utf-8"))
+        except Exception:
+            return None
+
+    async def get_form(self, *a, **k):
+        return await self._pr.form()
+
+    async def form(self):
+        return await self._pr.form()
+
+    async def files(self):
+        return await self._pr.files()
+
+    @property
+    def json(self):
+        import json as _json
+
+        try:
+            return _json.loads(self._body.decode("utf-8"))
+        except Exception:
+            return None
+
+    @property
+    def query(self):
+        return self.args
+
+    def __getattr__(self, key):
+        return getattr(self._pr, key, None)
+
+
+class FakeHeaders:
+    """大小写不敏感的 headers 容器（对齐 werkzeug/quart Headers 常用接口）。"""
+    def __init__(self, data: dict[str, str]):
+        self._data = {k.lower(): v for k, v in data.items()}
+
+    def get(self, key, default=None):
+        return self._data.get(key.lower(), default)
+
+    def __getitem__(self, key):
+        return self._data[key.lower()]
+
+    def __contains__(self, key):
+        return key.lower() in self._data
+
+    def items(self):
+        return list(self._data.items())
+
+    def __iter__(self):
+        return iter(self._data.items())
+
+    def getlist(self, key, default=None):
+        v = self._data.get(key.lower())
+        return [v] if v is not None else (default if default is not None else [])
+
+
+class FakeMultiDict:
+    """类 werkzeug MultiDict（request.args.get(key) 等）。"""
+
+    def __init__(self, pairs: list[tuple[str, str]]):
+        self._pairs = pairs
+
+    def get(self, key, default=None, type=None):
+        val = None
+        for k, v in reversed(self._pairs):
+            if k == key:
+                val = v
+                break
+        if val is None:
+            return default
+        if type is not None:
+            try:
+                return type(val)
+            except (TypeError, ValueError):
+                return default
+        return val
+
+    def getlist(self, key):
+        return [v for k, v in self._pairs if k == key]
+
+    def __getitem__(self, key):
+        v = self.get(key)
+        if v is None:
+            raise KeyError(key)
+        return v
+
+    def __contains__(self, key):
+        return any(k == key for k, _ in self._pairs)
+
+    def items(self):
+        return list(self._pairs)
+
+    def multi_items(self):
+        return list(self._pairs)
+
+    def keys(self):
+        return list(dict.fromkeys(k for k, _ in self._pairs))
+
+
+class FakeJSONProvider:
+    """模拟 quart JSONProvider：jsonify() 的 response 构造。"""
+
+    def __init__(self):
+        self.dumps = json.dumps
+        self.loads = json.loads
+
+    def response(self, *args, **kwargs):
+        from quart.wrappers.response import Response
+
+        if len(args) == 1 and not kwargs and not isinstance(args[0], (tuple, list)):
+            data = args[0]
+        elif len(args) == 1 and isinstance(args[0], (tuple, list)) and len(args[0]) > 1 and isinstance(args[0][1], int):
+            # (dict, status) 元组
+            data = args[0][0]
+            status = args[0][1]
+            body = json.dumps(data, ensure_ascii=False).encode()
+            return Response(body, status=status, headers={"Content-Type": "application/json"})
+        else:
+            data = list(args) if args else kwargs
+        body = json.dumps(data, ensure_ascii=False).encode()
+        return Response(body, status=200, headers={"Content-Type": "application/json"})
+
+
+class FakeQuartApp:
+    """模拟 quart app（current_app），支撑 jsonify / make_response / send_file /
+    url_for 等在插件 Web handler 中的使用。"""
+
+    def __init__(self):
+        self.config: dict = {}
+        self.url_map: dict = {}
+        self.json = FakeJSONProvider()
+        self.jinja_env = None
+
+    def url_for(self, endpoint: str, **values):
+        path = "/" + endpoint.lstrip("/")
+        if values:
+            path += "?" + "&".join(f"{k}={v}" for k, v in values.items())
+        return path
+
+    async def send_file(self, path, *args, **kwargs):
+        from quart.wrappers.response import Response
+
+        with open(path, "rb") as f:
+            content = f.read()
+        headers = {"Content-Type": "application/octet-stream"}
+        filename = str(path).split("/")[-1]
+        if "." in filename:
+            ext = filename.rsplit(".", 1)[-1].lower()
+            import mimetypes
+
+            ct = mimetypes.guess_type(filename)[0]
+            if ct:
+                headers["Content-Type"] = ct
+        return Response(content, status=200, headers=headers)
+
+    async def make_response(self, result, *args, **kwargs):
+        from quart.wrappers.response import Response
+
+        if isinstance(result, Response):
+            return result
+        if isinstance(result, tuple) and len(result) >= 2 and isinstance(result[1], int):
+            value, status = result[0], result[1]
+            if isinstance(value, dict):
+                body = json.dumps(value, ensure_ascii=False).encode()
+                return Response(body, status=status, headers={"Content-Type": "application/json"})
+            return Response(str(value).encode(), status=status)
+        if isinstance(result, dict):
+            body = json.dumps(result, ensure_ascii=False).encode()
+            return Response(body, status=200, headers={"Content-Type": "application/json"})
+        if isinstance(result, str):
+            return Response(result.encode(), status=200)
+        return Response(b"", status=200)
+
+
+class FakeQuartAppCtx:
+    """quart AppContext 形状：_cv_app.get().app 取到 FakeQuartApp。"""
+
+    def __init__(self):
+        self.app = FakeQuartApp()

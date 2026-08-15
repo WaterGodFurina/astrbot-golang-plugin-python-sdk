@@ -49,6 +49,8 @@ class Context:
         self.persona_mgr: Any = _PlaceholderProviderManager()
         # register_task 跟踪的任务（terminate 时取消）
         self._tasks: list[Any] = []
+        # register_web_api 注册的 Web API：[(route, handler, methods, desc)]
+        self._web_apis: list[tuple] = []
 
     def _bridge(self):
         if _host_bridge is None:
@@ -189,6 +191,16 @@ class Context:
         methods: list | None = None,
         desc: str = "",
     ) -> None:
-        logger.warning(
-            f"register_web_api({route}) 在 Go 宿主兼容运行时中不可用（WebUI 插件页面暂未提供）"
-        )
+        """注册 Web API（宿主 /api/plug/<plugin>/<route> 网关转发到本插件）。
+
+        route 支持动态段："/emoji/<category>"。handler 为 async 函数，路径参数
+        按名解包调用；可用 astrbot.api.web.request 或 quart 全局 request。
+        """
+        route = route if route.startswith("/") else "/" + route
+        methods = [m.upper() for m in (methods or ["GET"])]
+        for idx, (r, _, m, _) in enumerate(self._web_apis):
+            if r == route and m == methods:
+                self._web_apis[idx] = (route, handler, methods, desc)
+                return
+        self._web_apis.append((route, handler, methods, desc))
+        logger.info(f"register_web_api: {methods} {route} — {desc}")

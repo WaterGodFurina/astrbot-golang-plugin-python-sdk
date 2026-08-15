@@ -70,6 +70,7 @@ def main() -> int:
 
     servicer = PluginServiceServicer(plugin_name, plugin_version, plugin_desc, plugin_author, plugin_dir)
     servicer.inst = metadata.star_cls
+    servicer.web_apis = list(getattr(context, "_web_apis", []))
     context.plugin_name = plugin_name
     context.plugin_id = metadata.plugin_id
     try:

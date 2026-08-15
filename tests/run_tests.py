@@ -228,5 +228,99 @@ class TestBroker(unittest.TestCase):
 import types  # noqa: E402
 
 
+class TestWebAPI(unittest.TestCase):
+    """Web UI 插件 API：路由匹配、动态参数、quart 注入、响应序列化。"""
+
+    def test_web_route_pattern(self):
+        from astrbot._bridge.dispatch import PluginServiceServicer
+
+        svc = PluginServiceServicer("x", "1", "", "")
+        p, names = svc._web_route_pattern("/meme_manager/emoji/<category>")
+        self.assertEqual(names, ["category"])
+        m = p.match("/meme_manager/emoji/happy")
+        self.assertIsNotNone(m)
+        self.assertEqual(m.groupdict(), {"category": "happy"})
+        self.assertIsNone(p.match("/meme_manager/other/happy"))
+        p2, _ = svc._web_route_pattern("/a/<x>/<y>")
+        self.assertEqual(p2.match("/a/1/2").groupdict(), {"x": "1", "y": "2"})
+
+    def test_web_handler_dispatch(self):
+        import asyncio
+
+        from astrbot._bridge.dispatch import PluginServiceServicer
+        from astrbot._bridge.gen import plugin_pb2
+
+        async def api_emoji(category: str = None):
+            return {"status": "ok", "category": category}
+
+        svc = PluginServiceServicer("webdemo", "1", "", "")
+        svc.web_apis = [("/webdemo/emoji/<category>", api_emoji, ["GET"], "x")]
+        r = plugin_pb2.HandleWebRequestRequest(
+            method="GET", path="/webdemo/emoji/happy",
+            query=[plugin_pb2.WebKV(key="a", value="1"), plugin_pb2.WebKV(key="a", value="2")],
+        )
+        out = svc.HandleWebRequest(r, None)
+        self.assertEqual(out.status_code, 200)
+        self.assertEqual(json.loads(out.body), {"status": "ok", "category": "happy"})
+        # 方法不匹配 → 404
+        r2 = plugin_pb2.HandleWebRequestRequest(method="POST", path="/webdemo/emoji/happy")
+        self.assertEqual(svc.HandleWebRequest(r2, None).status_code, 404)
+        # 未注册 → 404
+        r3 = plugin_pb2.HandleWebRequestRequest(method="GET", path="/webdemo/nope")
+        self.assertEqual(svc.HandleWebRequest(r3, None).status_code, 404)
+
+    def test_quart_request_injection(self):
+        """quart 全局 request（_cv_request.get().request）可用。"""
+        import asyncio
+
+        try:
+            import quart  # noqa: F401
+        except ImportError:
+            self.skipTest("quart 未安装")
+        from astrbot._bridge.dispatch import PluginServiceServicer
+        from astrbot._bridge.gen import plugin_pb2
+
+        async def api_uses_quart():
+            from quart.globals import _cv_request
+
+            fake = _cv_request.get()
+            assert fake is not None and fake.request is fake
+            return {"status": "ok", "q": fake.request.args.get("pack_id", "")}
+
+        svc = PluginServiceServicer("qd", "1", "", "")
+        svc.web_apis = [("/qd/check", api_uses_quart, ["GET"], "x")]
+        r = plugin_pb2.HandleWebRequestRequest(
+            method="GET", path="/qd/check",
+            query=[plugin_pb2.WebKV(key="pack_id", value="p9")],
+        )
+        out = svc.HandleWebRequest(r, None)
+        self.assertEqual(out.status_code, 200)
+        self.assertEqual(json.loads(out.body), {"status": "ok", "q": "p9"})
+
+    def test_web_response_serialization(self):
+        from astrbot._bridge.dispatch import PluginServiceServicer
+        from astrbot._bridge.gen import plugin_pb2
+
+        svc = PluginServiceServicer("s", "1", "", "")
+        # dict → json 200
+        self.assertEqual(
+            svc._serialize_web_result({"status": "ok"}).status_code, 200
+        )
+        # (dict, status) 元组
+        out = svc._serialize_web_result(({"e": "x"}, 409))
+        self.assertEqual(out.status_code, 409)
+        # quart Response 兼容对象（有 status_code + body）
+        class FakeResp:
+            status_code = 201
+            body = b'{"created": true}'
+            headers = {"Content-Type": "application/json"}
+
+        out2 = svc._serialize_web_result(FakeResp())
+        self.assertEqual(out2.status_code, 201)
+        self.assertEqual(out2.body, b'{"created": true}')
+        # None → 200 空
+        self.assertEqual(svc._serialize_web_result(None).status_code, 200)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

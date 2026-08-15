@@ -68,6 +68,11 @@ class PluginServiceStub:
                 request_serializer=plugin__pb2.HandleToolRequest.SerializeToString,
                 response_deserializer=plugin__pb2.HandleToolResponse.FromString,
                 _registered_method=True)
+        self.HandleWebRequest = channel.unary_unary(
+                '/astrbot.sdk.v1.PluginService/HandleWebRequest',
+                request_serializer=plugin__pb2.HandleWebRequestRequest.SerializeToString,
+                response_deserializer=plugin__pb2.HandleWebRequestResponse.FromString,
+                _registered_method=True)
         self.HealthCheck = channel.unary_unary(
                 '/astrbot.sdk.v1.PluginService/HealthCheck',
                 request_serializer=plugin__pb2.Empty.SerializeToString,
@@ -130,6 +135,14 @@ class PluginServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def HandleWebRequest(self, request, context):
+        """HandleWebRequest dispatches a dashboard HTTP request to a plugin-registered
+        Web API (context.register_web_api / /api/plug/<path>).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def HealthCheck(self, request, context):
         """HealthCheck is used for keep-alive/readiness probing.
         """
@@ -176,6 +189,11 @@ def add_PluginServiceServicer_to_server(servicer, server):
                     servicer.HandleTool,
                     request_deserializer=plugin__pb2.HandleToolRequest.FromString,
                     response_serializer=plugin__pb2.HandleToolResponse.SerializeToString,
+            ),
+            'HandleWebRequest': grpc.unary_unary_rpc_method_handler(
+                    servicer.HandleWebRequest,
+                    request_deserializer=plugin__pb2.HandleWebRequestRequest.FromString,
+                    response_serializer=plugin__pb2.HandleWebRequestResponse.SerializeToString,
             ),
             'HealthCheck': grpc.unary_unary_rpc_method_handler(
                     servicer.HealthCheck,
@@ -354,6 +372,33 @@ class PluginService:
             '/astrbot.sdk.v1.PluginService/HandleTool',
             plugin__pb2.HandleToolRequest.SerializeToString,
             plugin__pb2.HandleToolResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def HandleWebRequest(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.PluginService/HandleWebRequest',
+            plugin__pb2.HandleWebRequestRequest.SerializeToString,
+            plugin__pb2.HandleWebRequestResponse.FromString,
             options,
             channel_credentials,
             insecure,
