@@ -49,7 +49,7 @@ class HelloPlugin(Star):
 ```
 插件目录/
 ├── main.py                  # 插件入口（或含 __init__.py 的包）
-├── metadata.json            # {name, desc, author, version, "language": "python"}
+├── metadata.json / metadata.yaml  # 插件元数据（语言由入口文件自动识别）
 ├── _conf_schema.json        # 配置 schema（WebUI 配置对话框）
 ├── requirements.txt         # 依赖（宿主自动 pip 安装到 venv）
 └── README.md
