@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "astrbot-python-sdk"
-version = "1.0.0"
+version = "0.1.0"
 description = "AstrBot (Go) Python 插件 SDK：Python 插件以 gRPC 子进程接入 Go 宿主"
 readme = "README.md"
 requires-python = ">=3.9"
