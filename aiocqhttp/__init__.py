@@ -44,23 +44,58 @@ class CQHttpConfig:
 
 
 class Event(dict):
-    """OneBot v11 事件对象。属性访问即字典键访问（对齐 aiocqhttp.event.Event：
-    self.__dict__ = self）。"""
+    """OneBot v11 事件对象。
+
+    对齐真实 aiocqhttp.event.Event：属性访问代理到字典键（__getattr__/
+    __setattr__），并提供 type/detail_type/sub_type/name 派生属性。与
+    早期实现不同，不用 `self.__dict__ = self`——那会引入自引用，导致
+    pickle/deepcopy 失效且属性写入被 property 遮蔽。
+    """
 
     def __init__(self, data: dict | None = None):
         super().__init__(data or {})
-        self.__dict__ = self
+
+    @property
+    def type(self) -> str:
+        """事件类型：message / notice / request / meta_event。"""
+        return self["post_type"]
+
+    @property
+    def detail_type(self) -> str:
+        """事件具体类型（message_type / notice_type / request_type 等）。"""
+        return self[f"{self.type}_type"]
+
+    @property
+    def sub_type(self) -> str | None:
+        return self.get("sub_type")
+
+    @property
+    def name(self) -> str:
+        """事件名：{type}.{detail_type}[.{sub_type}]。"""
+        n = self.type + "." + self.detail_type
+        if self.sub_type:
+            n += "." + self.sub_type
+        return n
 
     @property
     def message(self) -> list[dict] | str:
-        """原始 message 字段（CQ 段数组或 CQ 字符串）。"""
+        """原始 message 字段（CQ 段数组或 CQ 字符串）；非消息事件为空列表。"""
         return self.get("message", [])
+
+    def __getattr__(self, key):
+        return self.get(key)
+
+    def __setattr__(self, key, value) -> None:
+        self[key] = value
 
     def get(self, key, default=None):  # noqa: A003
         return super().get(key, default)
 
     def __str__(self) -> str:
         return json.dumps(dict(self), ensure_ascii=False)
+
+    def __repr__(self) -> str:
+        return f"<Event, {dict.__repr__(self)}>"
 
 
 class _APIProxy:
@@ -107,9 +142,14 @@ def _run_handler(handler, event: Event) -> None:
         if inspect.iscoroutine(result):
             loop.run_coro(result)
         elif inspect.isasyncgen(result):
+            # aiocqhttp 生态的 handler 用 event.send() 回复，异步生成器的
+            # yield 值没有对应的发送语义——只消费（驱动协程），不产出回复。
             async def _drain():
-                async for _ in result:
-                    pass
+                async for yielded in result:
+                    logger.debug(
+                        "aiocqhttp handler %s yield 的值被忽略（请用 event.send() 回复）",
+                        getattr(handler, "__name__", handler),
+                    )
 
             loop.run_coro(_drain())
     except Exception as e:  # noqa: BLE001
@@ -136,9 +176,10 @@ def dispatch(raw_event_json: str | bytes | dict | None) -> None:
     except (ValueError, TypeError):
         return
     if not isinstance(data, dict) or "post_type" not in data:
+        logger.debug("aiocqhttp dispatch: 非 OneBot 事件（无 post_type）被忽略: %r", raw_event_json)
         return
     event = Event(data)
-    post_type = data.get("post_type", "message")
+    post_type = data["post_type"]
     for bot in _registry.instances():
         for handler in bot._handlers_for(post_type, data):  # noqa: SLF001
             _run_handler(handler, event)
@@ -162,7 +203,7 @@ class CQHttp:
 
     # ---- 装饰器 ----
     def on_message(self, func=None, *, event=None, command=None, **kwargs):
-        return self._decorator("message", func, command=command)
+        return self._decorator("message", func, sub_event=event, command=command)
 
     def on_notice(self, func=None, *, event=None, **kwargs):
         return self._decorator("notice", func, sub_event=event)
@@ -174,6 +215,13 @@ class CQHttp:
         return self._decorator("meta_event", func, sub_event=event)
 
     def on_event(self, event_name: str):
+        """自定义事件装饰器（本兼容层扩展，真实 aiocqhttp 无此 API）。
+
+        event_name 按事件名匹配：既匹配元事件字段（data["event"]，如
+        "lifecycle" / "heartbeat"），也匹配 "post_type.detail_type" 点分名
+        （如 "meta_event.heartbeat"）。
+        """
+
         def deco(func):
             self._handlers.setdefault("custom", []).append((event_name, func))
             return func
@@ -181,14 +229,22 @@ class CQHttp:
         return deco
 
     def on_command(self, commands, *, aliases=None, **kwargs):
-        """命令装饰器：消息首词命中 commands/aliases 时调用。"""
+        """命令装饰器：消息首词命中 commands/aliases 时调用。
+
+        同时支持 @bot.on_command("x") 与 @bot.on_command("x")(func) 两种形式。
+        """
         names = list(commands) if isinstance(commands, (list, tuple)) else [commands]
         if aliases:
             names += list(aliases) if isinstance(aliases, (list, tuple)) else [aliases]
 
-        def deco(func):
+        def wrap(func):
             self._command_handlers.append((names, func))
             return func
+
+        def deco(func=None):
+            if func is None:
+                return wrap
+            return wrap(func)
 
         return deco
 
@@ -200,14 +256,22 @@ class CQHttp:
 
     def _decorator(self, event_type: str, func, sub_event=None, command=None):
         if command is not None:
-            # on_message(command="xxx") 形式 → 命令匹配
+            # on_message(command="xxx") 形式 → 命令匹配（func 可能为 None）
             return self.on_command(command)(func)
+        if func is None:
+            # @bot.on_message() / @bot.on_message(event="group") 带参形式：
+            # 返回可用的装饰器，sub_event 过滤在注册时落位。
+            def deco(f):
+                if sub_event is not None:
+                    self._handlers.setdefault(event_type + "_" + sub_event, []).append(f)
+                else:
+                    self._handlers.setdefault(event_type, []).append(f)
+                return f
+
+            return deco
         if sub_event is not None:
             self._handlers.setdefault(event_type + "_" + sub_event, []).append(func)
             return func
-        if func is None:
-            # 支持 @bot.on_message(event="...") 带参形式（sub_event 由上层处理）
-            return lambda f: self._handlers.setdefault(event_type, []).append(f) or f
         self._handlers[event_type].append(func)
         return func
 
@@ -218,8 +282,25 @@ class CQHttp:
         if sub:
             out += list(self._handlers.get(f"{post_type}_{sub}", []))
         if post_type == "message":
-            out += list(self._handlers.get("custom", []))
-        # on_event(event_name) 的 custom 事件：按 event 名匹配
+            # on_command 命令匹配
+            if self._command_handlers and "message" in data:
+                text = data["message"]
+                if isinstance(text, list):
+                    text = "".join(
+                        seg.get("data", {}).get("text", "")
+                        for seg in text
+                        if isinstance(seg, dict) and seg.get("type") == "text"
+                    )
+                first = str(text).split(maxsplit=1)[0] if str(text).strip() else ""
+                for names, func in self._command_handlers:
+                    if first in names:
+                        out.append(func)
+        # on_event(event_name) 的 custom 事件：按事件名匹配（data["event"]
+        # 元事件字段或 "post_type.detail_type" 点分名），未命中不调用。
+        dotted = f"{post_type}.{data.get(post_type + '_type', '')}"
+        for name, func in self._handlers.get("custom", []):
+            if name == data.get("event") or name == dotted or name == post_type:
+                out.append(func)
         return out
 
     # ---- API ----
@@ -232,26 +313,30 @@ class CQHttp:
             raise
 
     async def send(self, ctx, message, **kwargs) -> dict:
-        """发送消息。ctx 可以是 Event（按 event 路由）或 dict(group_id=...)。"""
-        if isinstance(ctx, Event) or (isinstance(ctx, dict) and "self_id" not in ctx):
-            if isinstance(ctx, dict) and ("group_id" in ctx or "user_id" in ctx):
-                params = dict(ctx)
-                params["message"] = message
-                if "group_id" in params:
-                    return await self.call_api("send_group_msg", **params)
-                return await self.call_api("send_private_msg", **params)
-            if isinstance(ctx, Event):
-                if ctx.get("group_id"):
-                    return await self.call_api(
-                        "send_group_msg", group_id=int(ctx["group_id"]), message=message
-                    )
-                if ctx.get("user_id"):
-                    return await self.call_api(
-                        "send_private_msg", user_id=int(ctx["user_id"]), message=message
-                    )
-        if isinstance(ctx, Event) and ctx.get("self_id"):
-            return await self.call_api("send_msg", **{"self_id": ctx["self_id"], "message": message, **kwargs})
-        raise ValueError(f"无法从 {ctx!r} 推断发送目标")
+        """发送消息。ctx 可以是 Event（按事件路由）或 dict(group_id=...)。
+
+        对齐真实 aiocqhttp：从事件/字典的 group_id / user_id 推断发送目标。
+        注意：OneBot v11 的 send_msg 不接受 self_id 参数，故不提供
+        "按 self_id 发送"的非标准分支。
+        """
+        if isinstance(ctx, Event):
+            # Event 优先（Event 是 dict 子类，若先查 dict 会把 post_type 等
+            # 事件字段一并带进 API 参数）
+            gid = ctx.get("group_id")
+            uid = ctx.get("user_id")
+            if gid:
+                return await self.call_api("send_group_msg", group_id=_to_int(gid, "group_id"), message=message)
+            if uid:
+                return await self.call_api("send_private_msg", user_id=_to_int(uid, "user_id"), message=message)
+        if isinstance(ctx, dict) and ("group_id" in ctx or "user_id" in ctx):
+            params = dict(ctx)
+            params["message"] = message
+            if "group_id" in params:
+                return await self.call_api("send_group_msg", **params)
+            return await self.call_api("send_private_msg", **params)
+        raise ValueError(
+            f"无法从 {ctx!r} 推断发送目标：需要 group_id 或 user_id（事件或 dict）"
+        )
 
     # 常用便捷方法（其余 action 经 api.* / call_api 通用转发）
     async def call_action(self, action: str, **params) -> dict:
@@ -316,4 +401,18 @@ class compat:
         result = func(*args, **kwargs)
         if inspect.iscoroutine(result):
             return loop.run_coro(result)
+        if inspect.isasyncgen(result):
+            # 异步生成器：消费并把 yield 值收集为列表返回
+            async def _collect():
+                return [item async for item in result]
+
+            return loop.run_coro(_collect())
         return result
+
+
+def _to_int(value, field: str) -> int:
+    """OneBot ID 字段（group_id/user_id）统一转 int：兼容 int/str，非法值报错。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"非法 {field}: {value!r}") from None
