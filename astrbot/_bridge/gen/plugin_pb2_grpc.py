@@ -68,6 +68,11 @@ class PluginServiceStub:
                 request_serializer=plugin__pb2.HandleToolRequest.SerializeToString,
                 response_deserializer=plugin__pb2.HandleToolResponse.FromString,
                 _registered_method=True)
+        self.ListTools = channel.unary_unary(
+                '/astrbot.sdk.v1.PluginService/ListTools',
+                request_serializer=plugin__pb2.Empty.SerializeToString,
+                response_deserializer=plugin__pb2.ListToolsResponse.FromString,
+                _registered_method=True)
         self.HandleWebRequest = channel.unary_unary(
                 '/astrbot.sdk.v1.PluginService/HandleWebRequest',
                 request_serializer=plugin__pb2.HandleWebRequestRequest.SerializeToString,
@@ -77,6 +82,11 @@ class PluginServiceStub:
                 '/astrbot.sdk.v1.PluginService/HealthCheck',
                 request_serializer=plugin__pb2.Empty.SerializeToString,
                 response_deserializer=plugin__pb2.HealthResponse.FromString,
+                _registered_method=True)
+        self.SetLogLevel = channel.unary_unary(
+                '/astrbot.sdk.v1.PluginService/SetLogLevel',
+                request_serializer=plugin__pb2.SetLogLevelRequest.SerializeToString,
+                response_deserializer=plugin__pb2.Empty.FromString,
                 _registered_method=True)
         self.Cleanup = channel.unary_unary(
                 '/astrbot.sdk.v1.PluginService/Cleanup',
@@ -135,6 +145,17 @@ class PluginServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListTools(self, request, context):
+        """ListTools returns the plugin's CURRENT LLM function tools. Plugin tools are
+        typically registered during instantiation (Context.add_llm_tools in
+        __init__/initialize), which happens AFTER Register — so the host pulls the
+        live tool list through this RPC instead of relying on the Register
+        snapshot (aligned with Python AstrBot's runtime tool collection).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def HandleWebRequest(self, request, context):
         """HandleWebRequest dispatches a dashboard HTTP request to a plugin-registered
         Web API (context.register_web_api / /api/plug/<path>).
@@ -145,6 +166,16 @@ class PluginServiceServicer:
 
     def HealthCheck(self, request, context):
         """HealthCheck is used for keep-alive/readiness probing.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SetLogLevel(self, request, context):
+        """SetLogLevel adjusts the plugin's log level at runtime: the host's
+        per-plugin override (DEBUG/INFO/WARNING/ERROR/CRITICAL), or "" to
+        follow the host's global level. Old plugin binaries (compiled against
+        a proto without this RPC) return UNIMPLEMENTED; the host tolerates it.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -190,6 +221,11 @@ def add_PluginServiceServicer_to_server(servicer, server):
                     request_deserializer=plugin__pb2.HandleToolRequest.FromString,
                     response_serializer=plugin__pb2.HandleToolResponse.SerializeToString,
             ),
+            'ListTools': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListTools,
+                    request_deserializer=plugin__pb2.Empty.FromString,
+                    response_serializer=plugin__pb2.ListToolsResponse.SerializeToString,
+            ),
             'HandleWebRequest': grpc.unary_unary_rpc_method_handler(
                     servicer.HandleWebRequest,
                     request_deserializer=plugin__pb2.HandleWebRequestRequest.FromString,
@@ -199,6 +235,11 @@ def add_PluginServiceServicer_to_server(servicer, server):
                     servicer.HealthCheck,
                     request_deserializer=plugin__pb2.Empty.FromString,
                     response_serializer=plugin__pb2.HealthResponse.SerializeToString,
+            ),
+            'SetLogLevel': grpc.unary_unary_rpc_method_handler(
+                    servicer.SetLogLevel,
+                    request_deserializer=plugin__pb2.SetLogLevelRequest.FromString,
+                    response_serializer=plugin__pb2.Empty.SerializeToString,
             ),
             'Cleanup': grpc.unary_unary_rpc_method_handler(
                     servicer.Cleanup,
@@ -383,6 +424,33 @@ class PluginService:
             _registered_method=True)
 
     @staticmethod
+    def ListTools(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.PluginService/ListTools',
+            plugin__pb2.Empty.SerializeToString,
+            plugin__pb2.ListToolsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def HandleWebRequest(request,
             target,
             options=(),
@@ -426,6 +494,33 @@ class PluginService:
             '/astrbot.sdk.v1.PluginService/HealthCheck',
             plugin__pb2.Empty.SerializeToString,
             plugin__pb2.HealthResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SetLogLevel(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.PluginService/SetLogLevel',
+            plugin__pb2.SetLogLevelRequest.SerializeToString,
+            plugin__pb2.Empty.FromString,
             options,
             channel_credentials,
             insecure,

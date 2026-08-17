@@ -176,6 +176,34 @@ class Context:
 
         llm_tools.add_func(name, func_args, desc, handler)
 
+    def add_llm_tools(self, *tools) -> None:
+        """添加 LLM 工具（对齐 Python 原版 Context.add_llm_tools）。
+
+        插件用 dataclass 子类化 FunctionTool 定义工具（name/description/
+        parameters + async run(event, **kwargs)），例如 Bing 搜索插件：
+            self.context.add_llm_tools(BingSearchTool(...), WebFetchTool(...))
+        宿主管线（HandleTool）经 run 调用并把返回值转文本反馈给模型。
+        """
+        from astrbot.core.provider.func_tool_manager import FuncTool, llm_tools
+
+        for tool in tools:
+            name = str(getattr(tool, "name", "") or "")
+            if not name:
+                continue
+            params = getattr(tool, "parameters", None) or {
+                "type": "object",
+                "properties": {},
+            }
+            desc = str(getattr(tool, "description", "") or "")
+            handler = getattr(tool, "run", None)
+            if handler is None:
+                handler = tool
+            llm_tools.remove_func(name)
+            llm_tools.func_list.append(
+                FuncTool(name=name, parameters=params, description=desc, handler=handler)
+            )
+            logger.info(f"plugin added LLM tool: {name}")
+
     def unregister_llm_tool(self, name: str) -> None:
         from astrbot.core.provider.func_tool_manager import llm_tools
 

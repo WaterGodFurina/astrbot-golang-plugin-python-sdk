@@ -239,14 +239,22 @@ class AstrMessageEvent(abc.ABC):
         )
 
     async def send(self, message: MessageChain) -> None:
-        """发送消息到消息平台（经宿主 HostService.SendMessage）。"""
+        """发送消息到消息平台（经宿主 HostService.SendMessage）。
+
+        对齐 Python 本体语义：发送即标记 _has_send_oper——管线的 LLM 决策
+        （process_stage）依据该标记：handler/钩子主动发送过的事件不再继续
+        走 LLM（否则 box 这类"主动发图回复"的插件命令会再生成一遍 LLM
+        回复）。
+        """
         from astrbot.core.star.context import get_host_bridge
 
         bridge = get_host_bridge()
         if bridge is None:
             logger.warning("send(): 宿主桥未就绪，消息未发送")
             return
-        await bridge.send_message(self.session, message)
+        self._has_send_oper = True
+        # send_message 是同步 RPC（grpc-python 阻塞调用），不能 await。
+        bridge.send_message(self.session, message)
 
     async def react(self, emoji: str) -> None:
         """对当前消息添加表情回应（宿主 PlatformManager.React，平台不支持时
@@ -330,7 +338,22 @@ class AstrMessageEvent(abc.ABC):
             description="",
             id=platform,
         )
-        event = cls(message_str or plain_text, obj, meta, conv_id)
+        # 按平台还原对应的事件子类：aiocqhttp 插件（box 等）依赖
+        # event.bot（CQHttp 实例，经 HostBridge.call_action 转发宿主）。
+        # 若统一构造 AstrMessageEvent（无 bot 属性），插件的
+        # event.bot.get_stranger_info(...) 会 AttributeError → 插件捕获
+        # 后静默失败 → 命令落空走 LLM。
+        if platform == "aiocqhttp":
+            from aiocqhttp import CQHttp
+            from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
+                AiocqhttpMessageEvent,
+            )
+
+            event = AiocqhttpMessageEvent(
+                message_str or plain_text, obj, meta, conv_id, bot=CQHttp()
+            )
+        else:
+            event = cls(message_str or plain_text, obj, meta, conv_id)
         event.is_at_or_wake_command = metadata.get("is_at_or_wake_command", False)
         event.is_wake = metadata.get("is_wake", False)
         event.call_llm = bool(metadata.get("call_llm", False))

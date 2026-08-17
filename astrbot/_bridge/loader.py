@@ -16,7 +16,15 @@ logger = logging.getLogger("astrbot.loader")
 
 
 def sanitize_module_name(name: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.\-]", "_", name)
+    """目录名 → 合法 Python 模块名。
+
+    只保留字母/数字/下划线：`-`（GitHub 仓库目录如
+    `astrbot-plugin-qq-group-daily-analysis-4.11.2-<commit>`）与 `.`
+    （版本号会破坏模块层级）等非法字符一律替换为 `_`。否则 main.py 的
+    相对导入（from .src... import）会因模块名含 `-`/`.` 而
+    ModuleNotFoundError（模块系统无法处理）。
+    """
+    return re.sub(r"[^A-Za-z0-9_]", "_", name)
 
 
 def _load_package_plugin(plugin_dir: str, pkg_name: str):
@@ -42,6 +50,41 @@ def _load_package_plugin(plugin_dir: str, pkg_name: str):
     pkg_mod = importlib.util.module_from_spec(pkg_spec)
     sys.modules[pkg] = pkg_mod
     pkg_spec.loader.exec_module(pkg_mod)
+
+    main_path = os.path.join(plugin_dir, "main.py")
+    main_spec = importlib.util.spec_from_file_location(
+        f"{pkg}.main", main_path, submodule_search_locations=None
+    )
+    if main_spec is None or main_spec.loader is None:
+        raise ImportError(f"插件 {pkg_name} 缺少 main.py")
+    main_mod = importlib.util.module_from_spec(main_spec)
+    sys.modules[f"{pkg}.main"] = main_mod
+    main_spec.loader.exec_module(main_mod)
+    return main_mod
+
+
+def _load_namespace_package_plugin(plugin_dir: str, pkg_name: str):
+    """无 __init__.py 的插件目录按 namespace package 加载（Python 3.3+）。
+
+    Python AstrBot 生态存在无 __init__.py 但仍用相对导入的插件（如 box 的
+    `from .core.draw import ...`）；把它们作为 <目录名>.main 的 namespace 包
+    子模块加载，相对导入即可解析（core 等子目录同样按 namespace 包发现）。
+    """
+    import importlib.util
+    import types
+
+    pkg = sanitize_module_name(pkg_name)
+    if not pkg or not re.match(r"^[A-Za-z_]\w*$", pkg):
+        pkg = "astrbot_plugin_" + pkg
+
+    # 显式注册 namespace 包：main.py 的相对导入（from .src... import）依赖
+    # 父包在 sys.modules 中且 __path__ 指向插件目录。不能依赖 sys.path 的
+    # 目录名自动发现——GitHub 仓库式目录名（astrbot-plugin-xxx-<version>-
+    # <commit>）经 sanitize 后的模块名与磁盘目录名不一致，自动发现会失败
+    # （ModuleNotFoundError）。
+    pkg_mod = types.ModuleType(pkg)
+    pkg_mod.__path__ = [plugin_dir]
+    sys.modules[pkg] = pkg_mod
 
     main_path = os.path.join(plugin_dir, "main.py")
     main_spec = importlib.util.spec_from_file_location(
@@ -96,10 +139,12 @@ def _apply_yaml_metadata(plugin_dir: str, metadata: StarMetadata) -> None:
         break
 
 
-def load_plugin(plugin_dir: str, context: Context) -> StarMetadata | None:
-    """import 插件并实例化其 Star 类。
+def load_plugin_import(plugin_dir: str, context: Context) -> StarMetadata | None:
+    """阶段 A：import 插件模块并发现 Star 类（不实例化）。
 
-    返回 StarMetadata（插件模块注册的元数据）；失败抛异常。
+    gRPC server 先于插件加载启动，宿主 Register 需要等本阶段完成（star
+    注册表填充）；而实例化（__init__ 里同步调 get_config）需要等宿主
+    Register 完成（HostService 身份绑定）。两阶段拆分避免循环等待。
     """
     plugin_dir = os.path.abspath(plugin_dir)
     if not os.path.isdir(plugin_dir):
@@ -114,10 +159,19 @@ def load_plugin(plugin_dir: str, context: Context) -> StarMetadata | None:
         sys.path.insert(0, os.path.dirname(plugin_dir))
         module = _load_package_plugin(plugin_dir, os.path.basename(plugin_dir))
     else:
-        # 简单插件：main.py 或同名包作为顶层模块
+        # 简单插件：main.py 作为顶层模块或 namespace 包子模块。
+        # 目录/父目录进 sys.path，供相对导入（namespace 包）与子包发现。
+        sys.path.insert(0, os.path.dirname(plugin_dir))
         sys.path.insert(0, plugin_dir)
         if has_main_py:
-            module = importlib.import_module("main")
+            if is_package:
+                module = _load_package_plugin(plugin_dir, os.path.basename(plugin_dir))
+            else:
+                # 无 __init__.py：namespace package 加载（对齐 Python AstrBot
+                # 对 box 这类插件的支持：main.py 相对导入可用）。
+                module = _load_namespace_package_plugin(
+                    plugin_dir, os.path.basename(plugin_dir)
+                )
         elif os.path.exists(os.path.join(plugin_dir, "__init__.py")):
             module = importlib.import_module(sanitize_module_name(os.path.basename(plugin_dir)))
         else:
@@ -149,26 +203,32 @@ def load_plugin(plugin_dir: str, context: Context) -> StarMetadata | None:
 
     # metadata.yaml 元数据优先（Python AstrBot 本体语义）
     _apply_yaml_metadata(plugin_dir, metadata)
+    metadata.module = module
+    metadata.root_dir_name = os.path.basename(plugin_dir)
+    return metadata
 
+
+def instantiate_plugin(metadata: StarMetadata, context: Context) -> None:
+    """阶段 B：实例化 Star 并执行 initialize()。必须在宿主 Register 完成
+    （HostService 身份绑定）后调用，插件 __init__/get_config 才能通过
+    宿主 GetConfig 的身份校验。"""
     star_cls = metadata.star_cls_type
     if star_cls is None:
-        raise ImportError(f"插件 {module_name} 的 Star 类未被识别")
+        raise ImportError(f"插件 {metadata.module.__name__} 的 Star 类未被识别")
 
     # 先设置身份，插件 __init__/get_config() 才能用注册名访问宿主配置
-    context.plugin_name = metadata.name or os.path.basename(plugin_dir)
+    context.plugin_name = metadata.name or metadata.root_dir_name
     context.plugin_id = metadata.plugin_id
 
     # 从宿主拉取插件配置
     try:
         config = context.get_config()
     except Exception as e:
-        logger.warning(f"插件 {module_name} 配置拉取失败: {e}")
+        logger.warning(f"插件 {metadata.module.__name__} 配置拉取失败: {e}")
         config = None
 
     inst = star_cls(context, config)
     metadata.star_cls = inst
-    metadata.module = module
-    metadata.root_dir_name = os.path.basename(plugin_dir)
 
     # 注入 plugin_id（对齐 Python 本体 star_manager 的 setattr）
     plugin_id = metadata.plugin_id
@@ -189,8 +249,16 @@ def load_plugin(plugin_dir: str, context: Context) -> StarMetadata | None:
     init = getattr(inst, "initialize", None)
     if init is not None:
         loop.run_coro(init(), timeout=30)
-        logger.info(f"插件 {module_name} initialize() 完成")
+        logger.info(f"插件 {metadata.module.__name__} initialize() 完成")
 
+
+def load_plugin(plugin_dir: str, context: Context) -> StarMetadata | None:
+    """import 插件并实例化其 Star 类（两阶段组合，见 load_plugin_import /
+    instantiate_plugin）。失败抛异常。"""
+    metadata = load_plugin_import(plugin_dir, context)
+    if metadata is None:
+        return None
+    instantiate_plugin(metadata, context)
     return metadata
 
 

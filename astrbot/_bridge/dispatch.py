@@ -5,6 +5,8 @@ import asyncio
 import inspect
 import json
 import logging
+import threading
+import time
 
 from astrbot._bridge import loop
 from astrbot._bridge.gen import plugin_pb2, plugin_pb2_grpc
@@ -49,6 +51,11 @@ EVENT_TYPE_TO_HOOK: dict[EventType, str] = {
 
 # 由 pipeline 直调、不经 HandleHook 的钩子
 DIRECT_CALLED_HOOKS = {"on_llm_request"}
+
+# aiocqhttp 兼容层的桥接钩子：插件实例化了 CQHttp（装饰器事件循环）时，注册
+# 一个 on_message 占位钩子，宿主即会把原始 OneBot 事件推给本进程（HandleHook），
+# 再经 aiocqhttp.dispatch 分发给 @bot.on_message 等装饰器。
+AIOCQHTTP_BRIDGE_HOOK = "__aiocqhttp_bridge__"
 
 
 def _call(handler, *args, timeout: float = HANDLER_TIMEOUT, **kwargs):
@@ -98,6 +105,15 @@ def _bind(handler, inst):
     return handler
 
 
+def _set_result(resp, event, stop: bool = False, handled: bool = True) -> None:
+    """填充响应中的 EventResult 复合消息（新宿主统一从 result 读），并保持
+    旧字段赋值不变（旧宿主只读 stop/sent/handled 顶层字段）。新旧宿主都能
+    正确读取；result 字段不存在/未赋值时宿主回退到旧字段。"""
+    resp.result.handled = bool(handled)
+    resp.result.sent = bool(getattr(event, "_has_send_oper", False))
+    resp.result.stop_propagation = bool(stop)
+
+
 def _fit_hook_args(handler, event=None, payload=None):
     """按 handler 声明的参数个数截断传参（对齐 Python 本体语义：
     on_astrbot_loaded/on_platform_loaded 无参，on_plugin_loaded 传 metadata，
@@ -135,6 +151,31 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         self.filter_handlers: list[tuple[str, object, object]] = []  # (name, handler, inst)
         self.hook_handlers: dict[str, tuple[str, object, object]] = {}  # name -> (event, handler, inst)
         self.tools: dict[str, tuple[str, object]] = {}  # tool_name -> (func, inst)
+        # 生命周期状态机（取代 _ready/_registered/_instanced 三个 Event）：
+        # REGISTERING（等插件 import 完成，放行 Register）→ REGISTERED（宿主
+        # Register 完成，身份绑定）→ RUNNING（实例化完成，放行 RPC）。语义
+        # 与原门闩一致，错误消息带 expected/actual 便于诊断。
+        from astrbot._bridge.state import LifecycleStateMachine
+
+        self.lifecycle = LifecycleStateMachine()
+        # Register RPC 内 `self._ready.wait(timeout=120)` 保持原语义（机器
+        # wait 的默认 min_state 即 REGISTERING）。
+        self._ready = self.lifecycle
+
+    def mark_ready(self) -> None:
+        self.lifecycle.mark_ready()
+
+    def mark_registered(self) -> None:
+        self.lifecycle.mark_registered()
+
+    def wait_registered(self, timeout: float) -> bool:
+        return self.lifecycle.wait_registered(timeout)
+
+    def mark_instanced(self) -> None:
+        self.lifecycle.mark_instanced()
+
+    def _wait_instanced(self) -> None:
+        self.lifecycle._wait_instanced()
 
     # ---- 注册收集 ----
     def _load_config_schema(self) -> dict:
@@ -163,6 +204,20 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         from astrbot.core.star.filter.event_message_type import EventMessageTypeFilter
         from astrbot.core.star.filter.platform_adapter_type import PlatformAdapterTypeFilter
         from astrbot.core.star.filter.regex import RegexFilter
+
+        # aiocqhttp 装饰器事件循环：插件实例化了 CQHttp 时注入 on_message
+        # 占位钩子，宿主把原始 OneBot 事件推给 HandleHook 再分发给装饰器。
+        try:
+            from aiocqhttp import _registry as _cqhttp_registry
+
+            if _cqhttp_registry.has_any():
+                self.hook_handlers[AIOCQHTTP_BRIDGE_HOOK] = (
+                    "on_message",
+                    None,
+                    None,
+                )
+        except Exception:
+            pass
 
         for md in star_handlers_registry.all():
             inst = self.inst
@@ -199,7 +254,14 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
 
     # ---- RPC 实现 ----
     def Register(self, request, context) -> plugin_pb2.RegisterResponse:
+        # 等待插件加载完成（star 注册表填充），避免注册出空 handler 集。
+        logger.info(f"Register: 等待插件加载完成（ready 门闩）… plugin_name={self.plugin_name}")
+        self._ready.wait(timeout=120)
+        logger.info(f"Register: 插件已就绪，构建注册表… plugin_name={self.plugin_name}")
+        t0 = time.monotonic()
         self.build_registry()
+        logger.info(f"Register: 注册表构建完成（{time.monotonic()-t0:.2f}s, "
+                    f"{len(self.commands)} 命令 / {len(self.filter_handlers)} 过滤器 / {len(self.hook_handlers)} 钩子）")
         resp = plugin_pb2.RegisterResponse(
             name=self.plugin_name,
             version=self.plugin_version,
@@ -250,6 +312,8 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
             resp.web_apis.append(
                 plugin_pb2.WebApiDesc(route=route, methods=list(methods), description=desc)
             )
+        # 宿主 Register 完成（身份绑定已生效）：放行插件实例化。
+        self.mark_registered()
         return resp
 
     def _find_command(self, name: str):
@@ -259,6 +323,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         return None, None
 
     def HandleCommand(self, request, context) -> plugin_pb2.HandleCommandResponse:
+        self._wait_instanced()
         f, handler = self._find_command(request.name)
         resp = plugin_pb2.HandleCommandResponse()
         if f is None or handler is None:
@@ -276,6 +341,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                 params = {}
         except ValueError as e:
             resp.text = f"参数错误: {e}"
+            _set_result(resp, event, handled=True)
             return resp
 
         bound = _bind(handler, self.inst)
@@ -284,6 +350,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         except Exception as e:
             logger.error(f"命令 {request.name} 执行失败: {e}")
             resp.text = f"插件执行失败: {e}"
+            _set_result(resp, event, handled=True)
             return resp
 
         chain: list[dict] = []
@@ -300,12 +367,20 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
             c, s = result_to_json(r)
             chain.extend(c)
             stop = stop or s
+        # event.stop_event()（_force_stopped）也要反映到响应：box 等插件
+        # 在 handler 里 stop_event() 表示"事件已处理、不要再走 LLM"，但
+        # handler 返回值里没有 Result（recall_task 路径），只靠返回值收集
+        # stop 会漏掉 → 宿主继续 LLM 兜底（重复回复）。
+        stop = stop or event.is_stopped()
         if chain:
             resp.chain_json = json.dumps(chain).encode()
         resp.stop = stop
+        resp.sent = event._has_send_oper
+        _set_result(resp, event, stop=stop, handled=True)
         return resp
 
     def HandleFilter(self, request, context) -> plugin_pb2.HandleFilterResponse:
+        self._wait_instanced()
         event_data = json.loads(request.event_json) if request.event_json else {}
         event = AstrMessageEvent.from_event_json(event_data)
         for name, handler, inst in self.filter_handlers:
@@ -330,7 +405,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                                 return plugin_pb2.HandleFilterResponse(allow=True)
                         except Exception:
                             return plugin_pb2.HandleFilterResponse(allow=True)
-                bound = _bind(handler, inst)
+                bound = _bind(handler, self.inst)
                 try:
                     results = _call(bound, event)
                 except Exception as e:
@@ -342,11 +417,25 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                         allow = False
                     elif r is True:
                         allow = True
-                return plugin_pb2.HandleFilterResponse(allow=allow)
+                resp = plugin_pb2.HandleFilterResponse(allow=allow, sent=event._has_send_oper)
+                _set_result(resp, event, handled=True)
+                return resp
         return plugin_pb2.HandleFilterResponse(allow=True)
 
     def HandleHook(self, request, context) -> plugin_pb2.HookResponse:
+        self._wait_instanced()
         resp = plugin_pb2.HookResponse(handled=False)
+        # aiocqhttp 桥接钩子：把宿主推来的原始 OneBot 事件分发给 @bot.on_message
+        # 等装饰器（该钩子无插件 handler，转发后直接返回）。
+        if request.name == AIOCQHTTP_BRIDGE_HOOK:
+            try:
+                from aiocqhttp import dispatch as _aiocqhttp_dispatch
+
+                event_data = json.loads(request.event_json) if request.event_json else {}
+                _aiocqhttp_dispatch(event_data.get("raw_message"))
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"aiocqhttp 事件分发失败: {e}")
+            return resp
         entry = self.hook_handlers.get(request.name)
         if entry is None:
             return resp
@@ -365,7 +454,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
 
             comps = [component_from_json(c) for c in chain]
             result = MessageEventResult(comps)
-            bound = _bind(handler, inst)
+            bound = _bind(handler, self.inst)
             try:
                 results = _call(bound, event, result)
             except Exception as e:
@@ -387,6 +476,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                     new_result.result_type == EventResultType.STOP
                 ) if isinstance(new_result, MessageEventResult) else False
                 resp.handled = True
+                _set_result(resp, event, stop=resp.stop, handled=True)
             return resp
 
         payload = None
@@ -418,7 +508,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                 except Exception:
                     pass
 
-        bound = _bind(handler, inst)
+        bound = _bind(handler, self.inst)
         try:
             results = _call(bound, *_fit_hook_args(bound, event, payload))
         except Exception as e:
@@ -428,9 +518,12 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
             if isinstance(r, MessageEventResult) and r.is_stopped():
                 resp.stop = True
         resp.handled = True
+        resp.sent = event._has_send_oper
+        _set_result(resp, event, stop=resp.stop, handled=True)
         return resp
 
     def HandleLLMRequest(self, request, context) -> plugin_pb2.HandleLLMRequestResponse:
+        self._wait_instanced()
         resp = plugin_pb2.HandleLLMRequestResponse(system_prompt=request.system_prompt)
         entry = self.hook_handlers.get(request.name)
         if entry is None:
@@ -442,7 +535,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
             prompt=request.user_prompt,
             system_prompt=request.system_prompt,
         )
-        bound = _bind(handler, inst)
+        bound = _bind(handler, self.inst)
         try:
             results = _call(bound, *_fit_hook_args(bound, event, req))
         except Exception as e:
@@ -455,12 +548,24 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                 req = r
         resp.system_prompt = req.system_prompt or ""
         resp.stop = bool(getattr(req, "stop", False))
+        resp.sent = event._has_send_oper
+        _set_result(resp, event, stop=resp.stop, handled=True)
         return resp
 
     def HandleTool(self, request, context) -> plugin_pb2.HandleToolResponse:
+        self._wait_instanced()
         entry = self.tools.get(request.name)
         if entry is None:
-            return plugin_pb2.HandleToolResponse(text=f"工具 {request.name} 未找到", is_error=True)
+            # self.tools 是 Register 时（registry_build 阶段）的快照，而插件
+            # 工具在实例化阶段（__init__/initialize 的 add_llm_tools）注册，
+            # 晚于 Register——快照里没有。回退到实时注册表（对齐 ListTools 的
+            # 运行时收集），避免"工具 X 未找到"。
+            from astrbot.core.provider.func_tool_manager import llm_tools
+
+            live = llm_tools.get_func_by_name(request.name)
+            if live is None:
+                return plugin_pb2.HandleToolResponse(text=f"工具 {request.name} 未找到", is_error=True)
+            entry = (live, self.inst)
         tool, inst = entry
         event_data = json.loads(request.event_json) if request.event_json else {}
         event = AstrMessageEvent.from_event_json(event_data)
@@ -473,14 +578,16 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
             if not isinstance(args, dict):
                 args = {}
         handler = tool.handler
-        bound = _bind(handler, inst)
+        bound = _bind(handler, self.inst)
         try:
             results = _call(bound, event, **args)
         except Exception as e:
             logger.error(f"工具 {request.name} 执行失败: {e}")
-            return plugin_pb2.HandleToolResponse(
+            resp = plugin_pb2.HandleToolResponse(
                 text=f"工具 {request.name} 执行失败: {e}", is_error=True
             )
+            _set_result(resp, event, handled=True)
+            return resp
         texts = []
         for r in results:
             if r is None:
@@ -493,10 +600,63 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                 for c in (r.chain or []):
                     if hasattr(c, "text") and c.type == "Plain":
                         texts.append(c.text)
-        return plugin_pb2.HandleToolResponse(text="\n".join(t for t in texts if t))
+            elif hasattr(r, "content") and isinstance(r.content, list):
+                # mcp CallToolResult（嵌入式 mcp 兼容层）：提取 content 里的
+                # TextContent.text（如 Bing 搜索插件的 run 返回值）。
+                for c in r.content:
+                    if c is None:
+                        continue
+                    text = getattr(c, "text", None)
+                    if isinstance(text, str):
+                        texts.append(text)
+        resp = plugin_pb2.HandleToolResponse(
+            text="\n".join(t for t in texts if t), sent=event._has_send_oper
+        )
+        _set_result(resp, event, handled=True)
+        return resp
 
     def HealthCheck(self, request, context) -> plugin_pb2.HealthResponse:
         return plugin_pb2.HealthResponse(ok=True, version=self.plugin_version)
+
+    def SetLogLevel(self, request, context) -> plugin_pb2.Empty:
+        """调整插件子进程的日志级别（宿主 per-plugin 覆盖）。
+
+        level 为空字符串表示跟随宿主全局级别（回到 INFO 兜底）。直接改 root
+        logger 级别——插件侧 stderr 的日志行经 Python logging 过滤后才转发
+        给宿主，改这里即可实时生效，无需重启插件。
+        """
+        level = (request.level or "").strip().upper()
+        if level not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+            level = "INFO"
+        logging.getLogger().setLevel(getattr(logging, level, logging.INFO))
+        logger.log(
+            getattr(logging, level, logging.INFO),
+            f"插件日志级别已调整为 {level}（宿主设置）",
+        )
+        return plugin_pb2.Empty()
+
+    def ListTools(self, request, context) -> plugin_pb2.ListToolsResponse:
+        """返回插件当前注册的 LLM 函数工具。
+
+        插件工具通常在实例化阶段（__init__/initialize 里的
+        Context.add_llm_tools）注册，晚于 Register——宿主通过本 RPC 实时拉取
+        最新工具列表（对齐 Python AstrBot 的运行时工具收集）。
+        """
+        from astrbot.core.provider.func_tool_manager import llm_tools
+
+        resp = plugin_pb2.ListToolsResponse()
+        for tool in llm_tools.list_funcs(only_active=True):
+            params = tool.parameters or {"type": "object", "properties": {}}
+            if not isinstance(params, dict):
+                params = {"type": "object", "properties": {}}
+            resp.tools.append(
+                plugin_pb2.ToolDesc(
+                    name=tool.name,
+                    description=tool.description or "",
+                    params_json=json.dumps(params).encode(),
+                )
+            )
+        return resp
 
     def HandleWebRequest(self, request, context) -> plugin_pb2.HandleWebRequestResponse:
         """宿主 /api/plug/<plugin_path> 网关转发来的 HTTP 请求。

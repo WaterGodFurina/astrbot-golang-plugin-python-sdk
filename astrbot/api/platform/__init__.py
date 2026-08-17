@@ -1,21 +1,5 @@
-from astrbot.core.platform import (  # noqa: F401
-    AstrBotMessage,
-    AstrMessageEvent,
-    Group,
-    MessageMember,
-    MessageSesion,
-    MessageSession,
-    MessageType,
-    PlatformMetadata,
-)
+"""astrbot.api.platform —— 群/成员模型（re-export 自 core.platform）。"""
 
-__all__ = [
-    "AstrBotMessage",
-    "AstrMessageEvent",
-    "Group",
-    "MessageMember",
-    "MessageSesion",
-    "MessageSession",
-    "MessageType",
-    "PlatformMetadata",
-]
+from astrbot.core.platform.astrbot_message import Group, MessageMember
+
+__all__ = ["Group", "MessageMember"]

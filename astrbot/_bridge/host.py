@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 
 import grpc
@@ -31,6 +32,20 @@ class HostBridge:
         self._lock = threading.Lock()
         self.plugin_name: str = ""
         self.plugin_id: str = ""
+        # 宿主能力集：宿主启动/重载平台时经 ASTRBOT_HOST_CAPABILITIES 环境
+        # 变量注入（逗号分隔）。能力命名 = 已注册平台适配器 ID（如
+        # aiocqhttp/qq_official/telegram/slack）+ 固定能力（llm/send_message/
+        # recall_message/react/t2i/config/web）。旧宿主不注入该变量 → 空集
+        # 容错（has() 恒 False），插件按"能力未知"降级处理。用法示例：
+        #   bridge = get_bridge()
+        #   if bridge.has("aiocqhttp"): ...   # 当前宿主是否接入了该平台
+        #   if bridge.has("llm"): ...         # 宿主是否提供 ChatLLM
+        raw = os.environ.get("ASTRBOT_HOST_CAPABILITIES", "")
+        self.capabilities: set[str] = {c.strip() for c in raw.split(",") if c.strip()}
+
+    def has(self, name: str) -> bool:
+        """报告宿主是否公开了名为 name 的能力（平台 ID 或固定能力）。"""
+        return name in self.capabilities
 
     def connect(self, service_id: int = HOST_SERVICE_APP_ID) -> bool:
         try:
@@ -45,10 +60,19 @@ class HostBridge:
             return False
 
     def ensure_connected(self) -> bool:
+        """确保宿主桥已连接；未连接时同步 Dial（宿主 accept 可能晚于插件
+        启动，最多重试 PRECONNECT_ATTEMPTS 次）。插件加载期间
+        （get_config 等）会调用本方法，不能一次失败就放弃。"""
         with self._lock:
             if self._stub is not None:
                 return True
-        return self.connect()
+        for i in range(PRECONNECT_ATTEMPTS):
+            if self.connect():
+                return True
+            import time
+
+            time.sleep(PRECONNECT_INTERVAL)
+        return False
 
     def preconnect(self) -> None:
         for _ in range(PRECONNECT_ATTEMPTS):
@@ -61,16 +85,38 @@ class HostBridge:
         logger.warning("HostService 预连接失败（5s 窗口内未收到 ConnInfo），插件将失去反向调用能力")
 
     def get_config(self, plugin_name: str) -> dict:
-        if not self.ensure_connected():
-            return {}
-        resp = self._stub.GetConfig(
-            plugin_pb2.GetConfigRequest(plugin_name=plugin_name or self.plugin_name),
-            timeout=30,
-        )
-        if not resp.config_json:
-            return {}
-        data = json.loads(resp.config_json)
-        return data if isinstance(data, dict) else {}
+        # 身份绑定（Register 完成）前的 PermissionDenied / 未就绪错误会重试：
+        # 插件 __init__ 里的 get_config 早于宿主 Register 完成，此时宿主侧
+        # 连接身份还是 manifest id（未绑注册名），GetConfig 会被拒绝。
+        name = plugin_name or self.plugin_name
+        last_err: Exception | None = None
+        for attempt in range(PRECONNECT_ATTEMPTS):
+            if not self.ensure_connected():
+                last_err = RuntimeError("宿主桥未连接")
+            else:
+                try:
+                    resp = self._stub.GetConfig(
+                        plugin_pb2.GetConfigRequest(plugin_name=name),
+                        timeout=30,
+                    )
+                    if not resp.config_json:
+                        return {}
+                    data = json.loads(resp.config_json)
+                    return data if isinstance(data, dict) else {}
+                except grpc.RpcError as e:
+                    last_err = e
+                    # 身份未绑定（Register 未完成）→ 短暂等待后重试
+                    if e.code() in (grpc.StatusCode.PERMISSION_DENIED, grpc.StatusCode.UNAVAILABLE):
+                        import time
+
+                        time.sleep(0.25)
+                        continue
+                    raise
+            import time
+
+            time.sleep(PRECONNECT_INTERVAL)
+        logger.warning(f"get_config({name}) 重试失败: {last_err}")
+        return {}
 
     def set_config(self, plugin_name: str, cfg: dict) -> bool:
         if not self.ensure_connected():
