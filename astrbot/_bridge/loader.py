@@ -229,7 +229,16 @@ def instantiate_plugin(metadata: StarMetadata, context: Context) -> None:
         logger.warning(f"插件 {metadata.module.__name__} 配置拉取失败: {e}")
         config = None
 
-    inst = star_cls(context, config)
+    # 实例化：部分插件 __init__(self, context) 不收 config（ragecoop 等）。
+    # 对齐 Python 本体 star_manager：先带 config 试，TypeError 回退无 config。
+    try:
+        inst = star_cls(context, config)
+    except TypeError:
+        logger.info(
+            f"插件 {metadata.name or metadata.root_dir_name} 的 __init__ 不接受 "
+            f"config 参数，回退为仅 context 实例化"
+        )
+        inst = star_cls(context)
     metadata.star_cls = inst
 
     # 注入 plugin_id（对齐 Python 本体 star_manager 的 setattr）
