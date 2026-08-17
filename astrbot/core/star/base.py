@@ -31,8 +31,9 @@ class Star(CommandParserMixin, PluginKVStoreMixin):
             if plugin_name
             else logging.getLogger("astrbot")
         )
-        if config is not None:
-            self.config = config
+        # 无条件设置 self.config（对齐本体）：配置拉取失败（None）时插件
+        # 访问 self.config 不再 AttributeError
+        self.config = config or {}
 
     def _get_context_config(self) -> Any:
         get_config = getattr(self.context, "get_config", None)

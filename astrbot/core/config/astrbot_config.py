@@ -15,9 +15,12 @@ class AstrBotConfig(dict):
     """插件配置对象（dict 子类 + 属性访问）。"""
 
     def __getattr__(self, item):
-        if item in self:
+        # 对齐 Python 本体：缺项返回 None 而非抛 AttributeError
+        # （插件惯用 `if self.config.some_switch:` 写法依赖此行为）。
+        try:
             return self[item]
-        raise AttributeError(item)
+        except KeyError:
+            return None
 
     def __setattr__(self, key, value) -> None:
         self[key] = value

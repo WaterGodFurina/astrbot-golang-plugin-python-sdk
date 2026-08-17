@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import os
-import socket
 import sys
 
 MAGIC_COOKIE_KEY = "ASTRBOT_PLUGIN_MAGIC_COOKIE"
@@ -21,25 +20,6 @@ MAGIC_COOKIE_VALUE = "astrbot-go-plugin-1"
 CORE_PROTOCOL_VERSION = 1
 APP_PROTOCOL_VERSION = 1
 ENV_MULTIPLEX_GRPC = "PLUGIN_MULTIPLEX_GRPC"
-
-
-def _bind_tcp() -> socket.socket:
-    min_port = _parse_port("PLUGIN_MIN_PORT")
-    max_port = _parse_port("PLUGIN_MAX_PORT")
-    if min_port and max_port:
-        for port in range(min_port, max_port + 1):
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            try:
-                s.bind(("127.0.0.1", port))
-                return s
-            except OSError:
-                s.close()
-        raise OSError(
-            f"go-plugin: 无法在 PLUGIN_MIN_PORT={min_port}..PLUGIN_MAX_PORT={max_port} 范围内绑定端口"
-        )
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(("127.0.0.1", 0))
-    return s
 
 
 def _parse_port(env: str) -> int:
@@ -71,15 +51,6 @@ def check_no_multiplex() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
-
-
-def handshake_listener() -> socket.socket:
-    check_magic_cookie()
-    check_no_multiplex()
-    sock = _bind_tcp()
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.listen(64)
-    return sock
 
 
 def port_range() -> tuple[int, int]:

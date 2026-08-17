@@ -2,6 +2,11 @@
 
 AstrBot（`github.com/WaterGodFurina/Astrbot-golang`）的 Python 插件 SDK。
 
+> **命名说明**：本仓库同时存在两套名字——Go module path 为
+> `github.com/WaterGodFurina/astrbot-golang-plugin-python-sdk`（宿主 go.mod
+> require 并 `go list -m` 定位 SDK 目录），Python distribution 名为
+> `astrbot-python-sdk`（pip）。两者是同一个仓库。
+
 Python 插件以 **gRPC 子进程**方式接入 Go 宿主（Astrbot-golang），与 Go 插件
 （`WaterGodFurina/Astrbot-go-plugin-sdk`）能力等价：命令 / 过滤器 / 钩子 /
 LLM 工具 / LLM 请求钩子 / 结果钩子 / HostService 反向调用。
@@ -89,19 +94,31 @@ class HelloPlugin(Star):
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
-pip install grpcio protobuf grpcio-tools
+pip install "grpcio>=1.50" "protobuf>=7.35,<8" grpcio-tools
 python tests/run_tests.py          # 单元测试
 python -m grpc_tools.protoc -Iproto \
   --python_out=astrbot/_bridge/gen --grpc_python_out=astrbot/_bridge/gen \
   proto/plugin.proto proto/goplugin.proto   # 重新生成 gRPC 代码
 ```
 
-`proto/` 目录：`plugin.proto`（PluginService/HostService，与 Go SDK 共享）、
-`goplugin.proto`（go-plugin 的 GRPCBroker 服务）。
+> 注意：`astrbot/_bridge/gen/*.py` 由 **protoc 7.35.1** 生成，生成代码会在
+> import 时校验 protobuf 运行时版本——venv 必须安装与 pyproject.toml 一致的
+> `protobuf>=7.35,<8`，否则插件在 dependency_check 阶段即 STARTUP_ERROR。
+
+`proto/` 目录：`plugin.proto`（PluginService/HostService，与 Go SDK 共享，
+Go 侧 gen 由 Go SDK 仓库的 `buf generate` 生成；本仓库的 Python gen 由上面的
+grpc_tools.protoc 生成）、`goplugin.proto`（go-plugin 的 GRPCBroker 服务）。
+
+## 宿主如何消费本 Go 模块
+
+宿主 `Astrbot-golang` 的 go.mod `require` 本模块（开发态用本地 `replace`），
+运行时在项目根目录执行 `go list -m -f '{{.Dir}}' <module>` 解析 SDK 目录并
+注入 PYTHONPATH；`internal/pysdk` 的 `Ensure()` 在模块解析失败时回退 GitHub
+tarball 下载（`v<SDKVersion>` tag，SDKVersion 即本仓库 tag）。
 
 ## 仓库
 
-- Python SDK（本仓库）：`github.com/WaterGodFurina/astrbot-python-sdk`
+- Python SDK（本仓库）：`github.com/WaterGodFurina/astrbot-golang-plugin-python-sdk`
 - Go 宿主：`github.com/WaterGodFurina/Astrbot-golang`
 - Go 插件 SDK：`github.com/WaterGodFurina/Astrbot-go-plugin-sdk`
 - Python AstrBot 参考实现：`github.com/AstrBotDevs/AstrBot`

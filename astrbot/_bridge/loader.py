@@ -156,11 +156,13 @@ def load_plugin_import(plugin_dir: str, context: Context) -> StarMetadata | None
     if is_package and has_main_py:
         # 包式插件（Python AstrBot 生态惯例）：目录名.main，相对导入可用。
         # 父目录进 sys.path 供包内 import 使用。
+        # 约定：一进程一插件，sys.path 注入不做清理（进程退出即回收）。
         sys.path.insert(0, os.path.dirname(plugin_dir))
         module = _load_package_plugin(plugin_dir, os.path.basename(plugin_dir))
     else:
         # 简单插件：main.py 作为顶层模块或 namespace 包子模块。
         # 目录/父目录进 sys.path，供相对导入（namespace 包）与子包发现。
+        # 约定：一进程一插件，sys.path 注入不做清理（进程退出即回收）。
         sys.path.insert(0, os.path.dirname(plugin_dir))
         sys.path.insert(0, plugin_dir)
         if has_main_py:

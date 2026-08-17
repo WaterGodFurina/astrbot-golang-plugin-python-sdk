@@ -37,10 +37,15 @@ def get_loop() -> asyncio.AbstractEventLoop:
 
 
 def run_coro(coro, timeout: float = 30.0):
-    """在常驻 loop 上执行协程并等待结果。"""
+    """在常驻 loop 上执行协程并等待结果。超时后取消协程再抛错，
+    避免失控协程（可能持有锁/连接）继续占用常驻 loop。"""
     loop = get_loop()
     future = asyncio.run_coroutine_threadsafe(coro, loop)
-    return future.result(timeout=timeout)
+    try:
+        return future.result(timeout=timeout)
+    except TimeoutError:
+        future.cancel()
+        raise
 
 
 def stop() -> None:

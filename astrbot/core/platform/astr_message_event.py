@@ -162,10 +162,14 @@ class AstrMessageEvent(abc.ABC):
         self._result = result
 
     def stop_event(self) -> None:
+        """停止事件处理（对齐 Python 本体语义：强制停止标记 + 已有 result 置 STOP）。
+
+        注意：MessageEventResult 没有 STOP 属性（STOP 在 EventResultType 枚举上），
+        必须走 result.stop_event()。
+        """
+        self._force_stopped = True
         if self._result:
-            self._result.set_result_type(MessageEventResult.STOP)
-        else:
-            self._force_stopped = True
+            self._result.stop_event()
 
     def continue_event(self) -> None:
         self._force_stopped = False
@@ -349,8 +353,11 @@ class AstrMessageEvent(abc.ABC):
                 AiocqhttpMessageEvent,
             )
 
+            # 复用单例 CQHttp（get_default_bot）：每事件 new 一个会让
+            # aiocqhttp 注册表无限增长（内存泄漏），且 dispatch 会把事件
+            # 分发给所有历史实例，handler 被重复调用 N 次。
             event = AiocqhttpMessageEvent(
-                message_str or plain_text, obj, meta, conv_id, bot=CQHttp()
+                message_str or plain_text, obj, meta, conv_id, bot=CQHttp.get_default_bot()
             )
         else:
             event = cls(message_str or plain_text, obj, meta, conv_id)

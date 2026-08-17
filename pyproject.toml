@@ -7,12 +7,19 @@ name = "astrbot-python-sdk"
 version = "0.1.0"
 description = "AstrBot (Go) Python 插件 SDK：Python 插件以 gRPC 子进程接入 Go 宿主"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
     "grpcio>=1.50",
-    "protobuf>=4.0",
+    "protobuf>=7.35,<8",
 ]
 
 [tool.setuptools.packages.find]
-include = ["astrbot*"]
+include = [
+    "astrbot*",
+    "aiocqhttp*",
+    "botpy*",
+    "mcp*",
+    "slack_sdk*",
+    "telegram*",
+]

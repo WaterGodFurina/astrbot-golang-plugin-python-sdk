@@ -502,6 +502,8 @@ def register_agent(
             desc=instruction or f"将任务移交给子代理 {name}",
             handler=awaitable,
         )
+        # 先移除同名再追加（对齐 add_func 语义）：重复注册/热重载不累积
+        llm_tools.remove_func(tool.name)
         llm_tools.func_list.append(tool)
         return RegisteringAgent(tool)
 

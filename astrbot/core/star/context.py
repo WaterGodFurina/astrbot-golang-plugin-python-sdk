@@ -42,6 +42,7 @@ class Context:
 
     def __init__(self) -> None:
         self._config: AstrBotConfig | None = None
+        self._config_loaded: bool = False
         self.plugin_name: str = ""
         self.plugin_id: str = ""
         # provider_manager 占位：插件可能读取 personas 等属性（对齐 Python 本体）
@@ -60,14 +61,15 @@ class Context:
     def get_config(self, umo: str | None = None) -> AstrBotConfig:
         if umo:
             logger.warning("get_config(umo) 在 Go 宿主兼容运行时中忽略 umo，返回插件配置")
-        # 缓存只在成功拿到非空配置后生效：插件启动早期 HostService 可能尚未
-        # 预连接完成，此时返回空配置并丢弃，下次调用重试。
-        if self._config is not None and len(self._config) > 0:
-            return self._config
+        # 区分"拉取成功（即使为空）"与"拉取失败"：成功即缓存（含空配置），
+        # 失败不缓存，下次调用重试（插件启动早期 HostService 可能未就绪）。
+        if self._config_loaded:
+            return self._config or AstrBotConfig()
         try:
             data = self._bridge().get_config(self.plugin_name)
-            if isinstance(data, dict) and len(data) > 0:
+            if isinstance(data, dict):
                 self._config = AstrBotConfig(data)
+                self._config_loaded = True
                 return self._config
         except Exception as e:
             logger.warning(f"get_config() 拉取配置失败: {e}")
@@ -83,14 +85,22 @@ class Context:
             except BaseException as e:
                 raise ValueError("不合法的 session 字符串: " + str(e))
         try:
-            await self._bridge().send_message(session, message_chain)
+            # 必须 await 真异步版本（host.send_message 是同步 RPC，直接
+            # await 会抛 "object bool can't be used in 'await' expression"）
+            await self._bridge().send_message_async(session, message_chain)
             return True
         except Exception as e:
             logger.warning(f"send_message 失败: {e}")
             return False
 
-    async def chat_llm(self, prompt: str, system_prompt: str = "", image_urls: list[str] | None = None) -> str:
-        return await self._bridge().chat_llm(prompt, system_prompt, image_urls)
+    async def chat_llm(
+        self,
+        prompt: str,
+        system_prompt: str = "",
+        image_urls: list[str] | None = None,
+        session_id: str = "",
+    ) -> str:
+        return await self._bridge().chat_llm_async(prompt, system_prompt, image_urls, session_id)
 
     async def llm_generate(
         self,
@@ -113,7 +123,7 @@ class Context:
             last = contexts[-1] if isinstance(contexts[-1], dict) else None
             if last and last.get("content"):
                 prompt = str(last["content"]) + "\n" + prompt
-        text = await self._bridge().chat_llm(prompt, system_prompt or "", image_urls or [])
+        text = await self._bridge().chat_llm_async(prompt, system_prompt or "", image_urls or [])
         resp = LLMResponse(role="assistant")
         from astrbot.core.message.message_event_result import MessageChain
         from astrbot.core.message.components import Plain
@@ -197,7 +207,11 @@ class Context:
             desc = str(getattr(tool, "description", "") or "")
             handler = getattr(tool, "run", None)
             if handler is None:
+                handler = getattr(tool, "call", None)
+            if handler is None:
                 handler = tool
+            if not callable(handler):
+                raise TypeError(f"LLM 工具 {name} 没有可调用的 run()/call() 实现")
             llm_tools.remove_func(name)
             llm_tools.func_list.append(
                 FuncTool(name=name, parameters=params, description=desc, handler=handler)

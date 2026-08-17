@@ -1,6 +1,7 @@
 """HostService 客户端 + 宿主桥（插件 → 宿主反向调用）。"""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -130,7 +131,13 @@ class HostBridge:
         )
         return True
 
-    def chat_llm(self, prompt: str, system_prompt: str = "", image_urls: list[str] | None = None) -> str:
+    def chat_llm(
+        self,
+        prompt: str,
+        system_prompt: str = "",
+        image_urls: list[str] | None = None,
+        session_id: str = "",
+    ) -> str:
         if not self.ensure_connected():
             raise RuntimeError("宿主桥未就绪（ChatLLM 不可用）")
         resp = self._stub.ChatLLM(
@@ -138,6 +145,7 @@ class HostBridge:
                 prompt=prompt,
                 system_prompt=system_prompt,
                 image_urls=image_urls or [],
+                session_id=session_id,
             ),
             timeout=180,
         )
@@ -205,7 +213,35 @@ class HostBridge:
         return data if isinstance(data, dict) else {"data": data}
 
     async def call_action_async(self, platform: str, api: str, params: dict) -> dict:
-        return self.call_action(platform, api, params)
+        """真异步 call_action：阻塞的同步 RPC 经 asyncio.to_thread 移出插件
+        常驻事件循环，避免一次慢调用冻结所有 async handler。"""
+        return await asyncio.to_thread(self.call_action, platform, api, params)
+
+    async def send_message_async(self, session, chain) -> bool:
+        """真异步 send_message（asyncio.to_thread 包装）。"""
+        return await asyncio.to_thread(self.send_message, session, chain)
+
+    async def chat_llm_async(
+        self,
+        prompt: str,
+        system_prompt: str = "",
+        image_urls: list[str] | None = None,
+        session_id: str = "",
+    ) -> str:
+        """真异步 chat_llm（LLM 响应可能长达数十秒，绝不能阻塞常驻 loop）。"""
+        return await asyncio.to_thread(
+            self.chat_llm, prompt, system_prompt, image_urls, session_id
+        )
+
+    async def text_to_image_async(self, text: str, template_name: str = "") -> bytes:
+        """真异步 text_to_image。"""
+        return await asyncio.to_thread(self.text_to_image, text, template_name)
+
+    async def get_config_async(self, plugin_name: str) -> dict:
+        return await asyncio.to_thread(self.get_config, plugin_name)
+
+    async def set_config_async(self, plugin_name: str, cfg: dict) -> bool:
+        return await asyncio.to_thread(self.set_config, plugin_name, cfg)
 
     def recall_message(self, platform: str, message_id: str) -> bool:
         if not self.ensure_connected():
@@ -224,7 +260,7 @@ class HostBridge:
         if not msg_id:
             return False
         session = event.session
-        return self.react(session.platform_id, session.session_id, msg_id, emoji)
+        return await asyncio.to_thread(self.react, session.platform_id, session.session_id, msg_id, emoji)
 
 
 _bridge: HostBridge | None = None

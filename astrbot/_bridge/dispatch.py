@@ -256,7 +256,11 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
     def Register(self, request, context) -> plugin_pb2.RegisterResponse:
         # 等待插件加载完成（star 注册表填充），避免注册出空 handler 集。
         logger.info(f"Register: 等待插件加载完成（ready 门闩）… plugin_name={self.plugin_name}")
-        self._ready.wait(timeout=120)
+        if not self._ready.wait(timeout=120):
+            logger.error(
+                f"Register: 插件 {self.plugin_name} 120s 内未完成加载，"
+                f"将注册空 handler 集（请检查 __init__/initialize 是否卡死）"
+            )
         logger.info(f"Register: 插件已就绪，构建注册表… plugin_name={self.plugin_name}")
         t0 = time.monotonic()
         self.build_registry()
@@ -468,7 +472,10 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                 if isinstance(new_result, MessageEventResult):
                     comps = new_result.chain or []
                 elif isinstance(new_result, str):
-                    comps = [result.chain[0]] if result.chain else []
+                    # 插件钩子返回字符串 = "用这段文本替换结果"：包装为 Plain
+                    from astrbot.core.message.components import Plain
+
+                    comps = [Plain(new_result)]
                 resp.chain_json = json.dumps(
                     [component_to_json_public(c) for c in comps]
                 ).encode()
@@ -744,27 +751,36 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         )
 
         fake = FakeQuartRequest(plugin_req, path_params)
-        # 注入 quart 全局（插件代码 from quart import request/jsonify/session 等）
+        # 注入 quart 全局（插件代码 from quart import request/jsonify/session 等）。
+        # gRPC 线程池复用线程，ContextVar 会残留到下一个请求 → 必须 reset。
+        cv_tokens: list[tuple[Any, Any]] = []
         try:
             from quart.globals import _cv_app, _cv_request
 
-            _cv_app.set(FakeQuartAppCtx())
-            _cv_request.set(fake)
+            cv_tokens.append((_cv_app, _cv_app.set(FakeQuartAppCtx())))
+            cv_tokens.append((_cv_request, _cv_request.set(fake)))
         except Exception:
             pass
 
-        with bind_request_context(plugin_req):
-            args = []
-            sig_params = list(inspect.signature(handler).parameters.values())
-            positional = [
-                p for p in sig_params
-                if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-            ]
-            bound = _bind(handler, self.inst)
-            # 路径参数按名解包（Python 本体：view_handler(**path_values)）
-            kwargs = dict(path_params)
-            results = _call(bound, *args, **kwargs)
-            return results[-1] if results else None
+        try:
+            with bind_request_context(plugin_req):
+                args = []
+                sig_params = list(inspect.signature(handler).parameters.values())
+                positional = [
+                    p for p in sig_params
+                    if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+                ]
+                bound = _bind(handler, self.inst)
+                # 路径参数按名解包（Python 本体：view_handler(**path_values)）
+                kwargs = dict(path_params)
+                results = _call(bound, *args, **kwargs)
+                return results[-1] if results else None
+        finally:
+            for var, token in reversed(cv_tokens):
+                try:
+                    var.reset(token)
+                except Exception:
+                    pass
 
     @staticmethod
     def _serialize_web_result(result):

@@ -101,7 +101,7 @@ class Client:
     # ---- 发送（channel 场景） ----
     async def post_message(self, channel_id: str, message: MessageSend | str) -> Message:
         payload = message.to_dict() if isinstance(message, MessageSend) else {"content": str(message)}
-        data = await get_bridge().call_action("qq_official", "post_message", {
+        data = await get_bridge().call_action_async("qq_official", "post_message", {
             "channel_id": channel_id, **payload,
         })
         return Message(**(data or {}))
@@ -123,13 +123,20 @@ class Client:
         return self._on("member_leave", func)
 
     def _on(self, event_type, func):
+        import logging
+
+        logging.getLogger("botpy").warning(
+            f"botpy 事件分发暂不支持（宿主 qq_official 适配器不推送原始事件），"
+            f"@on_{event_type} 注册的 handler 不会执行"
+        )
         if func is None:
             return lambda f: self._handlers.append((event_type, f)) or f
         self._handlers.append((event_type, func))
         return func
 
     async def run(self, appid: str = "", token: str = "", **kw) -> None:
-        # 事件由宿主驱动（与 aiocqhttp 兼容层同机制）
+        # 事件由宿主驱动（与 aiocqhttp 兼容层同机制）；当前 botpy 事件分发
+        # 未接线，装饰器注册的 handler 不会被执行（见 _on 的 warning）。
         pass
 
 
@@ -149,6 +156,6 @@ class _APIRegistry:
 
     def __getattr__(self, name):
         async def _call(**params):
-            return await get_bridge().call_action("qq_official", name, params)
+            return await get_bridge().call_action_async("qq_official", name, params)
 
         return _call

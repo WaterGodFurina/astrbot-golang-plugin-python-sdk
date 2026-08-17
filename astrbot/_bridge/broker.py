@@ -38,21 +38,13 @@ class GRPCBrokerServicer(goplugin_pb2_grpc.GRPCBrokerServicer):
         return iter(())
 
     def dial(self, service_id: int, timeout: float = DIAL_TIMEOUT) -> grpc.Channel:
-        deadline = threading.Event()
-        waited = 0.0
-        while True:
-            with self._cv:
-                if service_id in self._conns:
-                    network, address = self._conns[service_id]
-                    break
-            import time
-
-            time.sleep(0.05)
-            waited += 0.05
-            if waited >= timeout:
+        # 条件等待（StartStream 会 notify_all），避免 50ms 忙轮询
+        with self._cv:
+            if not self._cv.wait_for(lambda: service_id in self._conns, timeout=timeout):
                 raise TimeoutError(
                     f"broker: timeout waiting for connection info (service_id={service_id})"
                 )
+            network, address = self._conns[service_id]
         if network not in ("tcp", "unix"):
             raise ValueError(f"broker: unsupported network {network!r}")
         if network == "unix":

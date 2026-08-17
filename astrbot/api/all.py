@@ -1,6 +1,8 @@
 # ruff: noqa: F401, F403
 """旧风格兼容导出：from astrbot import *（对齐 Python astrbot.api.all.py）。"""
-from astrbot import logger
+# 用 api.logger（按调用方插件路由的 _PluginContextLogger），而非 astrbot 包
+# 顶层的裸 logging.getLogger——旧式插件才能享受 per-plugin 日志级别。
+from astrbot.api import logger
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.message.message_event_result import (
     CommandResult,

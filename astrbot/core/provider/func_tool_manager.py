@@ -45,11 +45,20 @@ def parse_docstring(doc: str) -> DocString:
     description_lines: list[str] = []
     in_args = False
     current_type_ctx = ""
+    # Google 风格 docstring 的段标记：命中即结束 Args 参数解析，避免
+    # "Returns:" 这类行被误解析为名为 Returns 的无类型参数（随后
+    # register_llm_tool 因缺类型注释抛 ValueError → 插件加载失败）。
+    section_markers = re.compile(r"^\s*(?:Returns|Raises|Yields|Example|Examples|Note|Warning|Raises:)\s*:", re.I)
     for raw in lines:
         line = raw.strip()
         if not line:
             if not in_args and description_lines and description_lines[-1]:
                 description_lines.append("")
+            continue
+        if in_args and section_markers.match(raw):
+            in_args = False
+            current_type_ctx = ""
+            description_lines.append(line)
             continue
         m = colon_param.match(raw)
         if m:

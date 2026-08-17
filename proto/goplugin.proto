@@ -1,7 +1,7 @@
 // go-plugin (hashicorp) 的 gRPC broker 协议（服务端角色），Python SDK 复刻。
 syntax = "proto3";
 package plugin;
-option go_package = "./plugin";
+option go_package = "github.com/WaterGodFurina/Astrbot-go-plugin-sdk/gen/sdkv1";
 
 message ConnInfo {
     uint32 service_id = 1;

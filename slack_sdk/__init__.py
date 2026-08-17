@@ -20,47 +20,53 @@ class WebClient:
         self.base_url = base_url
 
     async def chat_postMessage(self, channel: str, text: str = "", **params) -> dict:
-        return await get_bridge().call_action("slack", "chat.postMessage", {
+        return await get_bridge().call_action_async("slack", "chat.postMessage", {
             "channel": channel, "text": text, **params,
         })
 
     async def chat_update(self, channel: str, ts: str, text: str = "", **params) -> dict:
-        return await get_bridge().call_action("slack", "chat.update", {
+        return await get_bridge().call_action_async("slack", "chat.update", {
             "channel": channel, "ts": ts, "text": text, **params,
         })
 
     async def chat_delete(self, channel: str, ts: str, **params) -> dict:
-        return await get_bridge().call_action("slack", "chat.delete", {
+        return await get_bridge().call_action_async("slack", "chat.delete", {
             "channel": channel, "ts": ts, **params,
         })
 
     async def conversations_open(self, users: str | list, **params) -> dict:
-        return await get_bridge().call_action("slack", "conversations.open", {
+        return await get_bridge().call_action_async("slack", "conversations.open", {
             "users": users, **params,
         })
 
     async def conversations_info(self, channel: str, **params) -> dict:
-        return await get_bridge().call_action("slack", "conversations.info", {
+        return await get_bridge().call_action_async("slack", "conversations.info", {
             "channel": channel, **params,
         })
 
     async def users_info(self, user: str, **params) -> dict:
-        return await get_bridge().call_action("slack", "users.info", {
+        return await get_bridge().call_action_async("slack", "users.info", {
             "user": user, **params,
         })
 
     async def reactions_add(self, channel: str, name: str, timestamp: str, **params) -> dict:
-        return await get_bridge().call_action("slack", "reactions.add", {
+        return await get_bridge().call_action_async("slack", "reactions.add", {
             "channel": channel, "name": name, "timestamp": timestamp, **params,
         })
 
     def __getattr__(self, method: str):
-        """未显式实现的方法 → 动态转发 call_action（slack API 点分名）。"""
+        """未显式实现的方法 → 动态转发 call_action。
+
+        Python 方法名下划线风格（conversations_history / chat_postMessage）
+        映射为 Slack API 点分名：首个下划线换成点（conversations.history /
+        chat.postMessage），与显式方法的点分约定一致。
+        """
         if method.startswith("_"):
             raise AttributeError(method)
+        api = method.replace("_", ".", 1)
 
         async def _call(**params):
-            return await get_bridge().call_action("slack", method, params)
+            return await get_bridge().call_action_async("slack", api, params)
 
         return _call
 
@@ -72,6 +78,6 @@ class WebhookClient:
         self.url = url
 
     async def send(self, text: str = "", markdown: bool = True, **params) -> dict:
-        return await get_bridge().call_action("slack", "webhook.send", {
+        return await get_bridge().call_action_async("slack", "webhook.send", {
             "text": text, "markdown": markdown, **params,
         })

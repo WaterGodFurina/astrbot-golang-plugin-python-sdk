@@ -22,7 +22,8 @@ class PluginMultiDict(Generic[ValueT]):
         self._pairs = pairs
 
     def get(self, key: str, default: Any = None, type: Callable | None = None):
-        for item_key, item_value in reversed(self._pairs):
+        # 正向遍历返回第一次出现的值（对齐 werkzeug MultiDict 语义）
+        for item_key, item_value in self._pairs:
             if item_key != key:
                 continue
             if type is None:

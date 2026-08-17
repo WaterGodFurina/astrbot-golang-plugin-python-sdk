@@ -23,6 +23,8 @@ __all__ = [
     "InlineKeyboardMarkup",
     "InlineKeyboardButton",
     "KeyboardButton",
+    "Application",
+    "Updater",
 ]
 
 
@@ -107,43 +109,43 @@ class Bot:
 
     # ---- 发送方法（经宿主 Go telegram 适配器） ----
     async def send_message(self, chat_id, text: str, **params) -> Message:
-        data = await get_bridge().call_action("telegram", "sendMessage", {
+        data = await get_bridge().call_action_async("telegram", "sendMessage", {
             "chat_id": chat_id, "text": text, **params,
         })
         return Message(**(data or {}))
 
     async def send_photo(self, chat_id, photo, caption: str = "", **params) -> Message:
-        data = await get_bridge().call_action("telegram", "sendPhoto", {
+        data = await get_bridge().call_action_async("telegram", "sendPhoto", {
             "chat_id": chat_id, "photo": photo, "caption": caption, **params,
         })
         return Message(**(data or {}))
 
     async def send_document(self, chat_id, document, caption: str = "", **params) -> Message:
-        data = await get_bridge().call_action("telegram", "sendDocument", {
+        data = await get_bridge().call_action_async("telegram", "sendDocument", {
             "chat_id": chat_id, "document": document, "caption": caption, **params,
         })
         return Message(**(data or {}))
 
     async def send_audio(self, chat_id, audio, caption: str = "", **params) -> Message:
-        data = await get_bridge().call_action("telegram", "sendAudio", {
+        data = await get_bridge().call_action_async("telegram", "sendAudio", {
             "chat_id": chat_id, "audio": audio, "caption": caption, **params,
         })
         return Message(**(data or {}))
 
     async def send_video(self, chat_id, video, caption: str = "", **params) -> Message:
-        data = await get_bridge().call_action("telegram", "sendVideo", {
+        data = await get_bridge().call_action_async("telegram", "sendVideo", {
             "chat_id": chat_id, "video": video, "caption": caption, **params,
         })
         return Message(**(data or {}))
 
     async def send_sticker(self, chat_id, sticker, **params) -> Message:
-        data = await get_bridge().call_action("telegram", "sendSticker", {
+        data = await get_bridge().call_action_async("telegram", "sendSticker", {
             "chat_id": chat_id, "sticker": sticker, **params,
         })
         return Message(**(data or {}))
 
     async def delete_message(self, chat_id, message_id, **params) -> bool:
-        await get_bridge().call_action("telegram", "deleteMessage", {
+        await get_bridge().call_action_async("telegram", "deleteMessage", {
             "chat_id": chat_id, "message_id": message_id, **params,
         })
         return True
@@ -154,10 +156,10 @@ class Bot:
             body["chat_id"] = chat_id
         if message_id is not None:
             body["message_id"] = message_id
-        return await get_bridge().call_action("telegram", "editMessageText", body)
+        return await get_bridge().call_action_async("telegram", "editMessageText", body)
 
     async def answer_callback_query(self, callback_query_id, text: str = "", **params) -> bool:
-        await get_bridge().call_action("telegram", "answerCallbackQuery", {
+        await get_bridge().call_action_async("telegram", "answerCallbackQuery", {
             "callback_query_id": callback_query_id, "text": text, **params,
         })
         return True
@@ -168,12 +170,12 @@ class Bot:
             raise AttributeError(method)
 
         async def _call(**params):
-            return await get_bridge().call_action("telegram", method, params)
+            return await get_bridge().call_action_async("telegram", method, params)
 
         return _call
 
     async def get_me(self) -> User:
-        data = await get_bridge().call_action("telegram", "getMe", {})
+        data = await get_bridge().call_action_async("telegram", "getMe", {})
         return User(**(data or {}))
 
 
@@ -190,18 +192,32 @@ class Update:
 
 
 class Application:
-    """Application/Updater 骨架：add_handler 保留注册（事件分发与 aiocqhttp
-    兼容层同机制——宿主 on_message 桥接钩子推送时调用）。"""
+    """Application/Updater 骨架：add_handler 保留注册面。
+
+    注意：telegram 事件分发尚未接线（宿主 telegram 适配器暂不推送原始
+    Update 事件），add_handler 注册的 handler 当前不会被执行——与
+    aiocqhttp 兼容层的完整分发链路不同。插件请改用 Bot 的发送方法 +
+    AstrBot 自身的命令/过滤器体系。
+    """
 
     def __init__(self, bot: Bot | None = None, **kw):
         self.bot = bot
         self._handlers: list = []
 
     def add_handler(self, handler) -> None:
+        import logging
+
+        logging.getLogger("telegram").warning(
+            "telegram Application.add_handler：事件分发暂不支持，handler 不会执行"
+        )
         self._handlers.append(handler)
 
     def add_error_handler(self, handler) -> None:
-        pass
+        import logging
+
+        logging.getLogger("telegram").warning(
+            "telegram Application.add_error_handler：事件分发暂不支持"
+        )
 
     async def initialize(self) -> None:
         pass

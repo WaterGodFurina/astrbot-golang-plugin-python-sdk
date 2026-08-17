@@ -6,9 +6,13 @@ import json
 import os
 import sys
 import tempfile
+import types  # noqa: F401  （供 _make_plugin 使用，保持在文件头部）
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "astrbot"))
+# 插入仓库根目录（而非 astrbot/ 子目录）：测试都是
+# `from astrbot._bridge... import ...` 风格，把 astrbot/ 本身加入搜索路径
+# 会使 `astrbot` 包不可导入 → ModuleNotFoundError。
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 class TestSerialize(unittest.TestCase):
@@ -125,8 +129,6 @@ class Dyn(Star):
         return mod
 
     def test_register_metadata(self):
-        import types
-
         from astrbot._bridge.dispatch import PluginServiceServicer
         from astrbot.core.star.star import star_map
 
@@ -136,7 +138,10 @@ class Dyn(Star):
         self.assertEqual(md.name, "dyn_plugin")
 
         svc = PluginServiceServicer("dyn_plugin", "1.0.0", "", "", plugin_dir=tempfile.gettempdir())
-        # 不加载真实实例（无宿主），仅验证 build_registry 收集
+        # 不加载真实实例（无宿主），仅验证 build_registry 收集。
+        # 先放行 ready 门闩：Register 会 _ready.wait(timeout=120)，不放行
+        # 会硬等 120s 后才注册出空 handler 集。
+        svc.mark_ready()
         from astrbot._bridge.dispatch import star_handlers_registry as _s  # noqa
 
         resp = svc.Register(None, None)
@@ -225,9 +230,6 @@ class TestBroker(unittest.TestCase):
         self.assertIn(7, b._conns)
 
 
-import types  # noqa: E402
-
-
 class TestWebAPI(unittest.TestCase):
     """Web UI 插件 API：路由匹配、动态参数、quart 注入、响应序列化。"""
 
@@ -309,11 +311,14 @@ class TestWebAPI(unittest.TestCase):
         # (dict, status) 元组
         out = svc._serialize_web_result(({"e": "x"}, 409))
         self.assertEqual(out.status_code, 409)
-        # quart Response 兼容对象（有 status_code + body）
+        # quart Response 兼容对象（有 status_code + get_data，对齐真实 quart）
         class FakeResp:
             status_code = 201
             body = b'{"created": true}'
             headers = {"Content-Type": "application/json"}
+
+            def get_data(self):
+                return self.body
 
         out2 = svc._serialize_web_result(FakeResp())
         self.assertEqual(out2.status_code, 201)

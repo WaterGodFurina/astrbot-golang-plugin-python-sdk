@@ -72,9 +72,9 @@ def main() -> int:
         go_handshake.check_no_multiplex()
         import grpc  # noqa: F401  （grpc 缺失在此失败并报 STARTUP_ERROR）
 
-        if sys.version_info < (3, 8):
+        if sys.version_info < (3, 10):
             raise RuntimeError(
-                f"需要 Python >= 3.8，当前 {sys.version_info.major}.{sys.version_info.minor}"
+                f"需要 Python >= 3.10，当前 {sys.version_info.major}.{sys.version_info.minor}"
             )
         # venv 标记：宿主准备的 venv 中 sys.prefix != base_prefix；
         # ASTRBOT_PLUGIN_DATA_DIR 缺失说明非宿主启动（本地调试），仅告警。
@@ -223,7 +223,23 @@ def main() -> int:
     except Exception as e:
         return _startup_failed("instantiate", e, plugin_dirname)
 
-    # 7) phase=running：常驻。
+    # 7) phase=running：常驻。注册 SIGTERM/SIGINT 处理：宿主 go-plugin 停插件
+    #    发 SIGTERM，默认行为直接终止进程 → finally 里的清理（server.stop /
+    #    event_loop.stop / 状态机 STOPPED）不会执行，插件 terminate 钩子也不
+    #    会被调用。转成 SystemExit 走正常清理路径。
+    try:
+        import signal
+
+        def _handle_sigterm(signum, frame):
+            logger.info(f"收到信号 {signum}，进入清理流程")
+            raise SystemExit(0)
+
+        if threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGTERM, _handle_sigterm)
+            signal.signal(signal.SIGINT, _handle_sigterm)
+    except (ImportError, ValueError, OSError):
+        pass  # 非主线程/受限环境：跳过信号注册，保持默认终止行为
+
     try:
         progress.emit_phase("running")
         while True:

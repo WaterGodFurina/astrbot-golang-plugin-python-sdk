@@ -7,6 +7,10 @@
 //
 //	buf generate
 //
+// （本仓库 gen/ 下是 Python 代码，由 grpc_tools.protoc 生成，命令见 README
+// 「开发与测试」；"buf generate" 指 Go SDK 仓库 astrbot-go-plugin-sdk 用
+// 同一份 proto 生成 Go 代码的流程。）
+//
 // The heavy, platform-specific event/component payloads (message chains,
 // metadata) cross the wire as `bytes` of JSON to keep the proto surface small
 // and forward-compatible; the SDK (event.go) provides typed helpers.
@@ -117,7 +121,7 @@ message CommandDesc {
   string name = 1;
   repeated string aliases = 2;
   string description = 3;
-  string usage = 4;
+  string usage = 4;   // TODO: Python SDK Register 暂不填充（宿主 WebUI 展示为空）
   string permission = 5; // "everyone" | "admin"
 }
 

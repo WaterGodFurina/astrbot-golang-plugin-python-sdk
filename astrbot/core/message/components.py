@@ -368,7 +368,9 @@ class Image(BaseMessageComponent):
 class Reply(BaseMessageComponent):
     type: ComponentType = ComponentType.Reply
     id: str | int
-    chain: list["BaseMessageComponent"] | None = []
+    # 注意：类级可变默认值会被所有实例共享——__init__ 里必须为每个实例
+    # 重建 chain（引用 BaseMessageComponent.__init__ 的默认值语义）。
+    chain: list["BaseMessageComponent"] | None = None
     sender_id: int | None | str = 0
     sender_nickname: str | None = ""
     time: int | None = 0
@@ -379,6 +381,9 @@ class Reply(BaseMessageComponent):
 
     def __init__(self, **_) -> None:
         super().__init__(**_)
+        # 实例级 chain：避免共享类属性 list 导致跨实例数据串扰
+        if self.chain is None:
+            self.chain = []
 
     def toDict(self):
         return {"type": "reply", "data": {"id": str(self.id)}}
@@ -502,18 +507,27 @@ class File(BaseMessageComponent):
 
     def __init__(self, name: str, file: str = "", url: str = "") -> None:
         super().__init__(name=name, file_=file, url=url)
+        self._file_cache: str | None = None
 
     @property
     def file(self) -> str:
+        # 远程文件下载结果缓存到实例属性：循环里多次访问 f.file 不会
+        # 重复下载、也不会遗留多个临时文件。
+        if self._file_cache is not None:
+            return self._file_cache
         if self.file_:
             path = file_uri_to_path(self.file_) if is_file_uri(self.file_) else self.file_
             if os.path.exists(path):
-                return os.path.abspath(path)
+                self._file_cache = os.path.abspath(path)
+                return self._file_cache
             if self.file_.startswith("http"):
-                return _download_to_temp(self.file_)
-            return os.path.abspath(path)
+                self._file_cache = _download_to_temp(self.file_)
+                return self._file_cache
+            self._file_cache = os.path.abspath(path)
+            return self._file_cache
         if self.url and (self.url.startswith("http://") or self.url.startswith("https://")):
-            return _download_to_temp(self.url)
+            self._file_cache = _download_to_temp(self.url)
+            return self._file_cache
         return self.file_ or self.url or ""
 
     def toDict(self):

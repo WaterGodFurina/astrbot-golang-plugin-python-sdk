@@ -392,6 +392,18 @@ class CQHttp:
     def context(self):
         return self
 
+    @staticmethod
+    def get_default_bot() -> "CQHttp":
+        """返回进程内首个注册的 CQHttp 实例；无则懒创建。
+
+        宿主事件重建（from_event_json 注入 event.bot）必须复用同一个实例，
+        否则 _registry 无限增长且事件被重复分发。
+        """
+        for bot in _registry.instances():
+            return bot
+        bot = CQHttp()
+        return bot
+
 
 class compat:
     """aiocqhttp.compat 子模块常用符号（run_sync 等）。"""
