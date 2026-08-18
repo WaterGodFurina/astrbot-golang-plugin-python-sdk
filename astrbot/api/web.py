@@ -261,3 +261,76 @@ def bind_request_context(request_: PluginRequest):
         yield request_
     finally:
         _request_var.reset(token)
+
+
+class PluginWebResponse:
+    """轻量 Web API 响应对象（对齐 starlette JSONResponse/StreamingResponse
+    的常用属性，宿主 dispatch 识别 status_code + body + headers）。"""
+
+    def __init__(
+        self,
+        body: bytes,
+        *,
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.status_code = status_code
+        self.body = body
+        self.headers = headers or {}
+        self.content_type = self.headers.get("Content-Type", "")
+
+    def get_data(self) -> bytes:
+        return self.body
+
+
+def json_response(
+    data: Any = None,
+    *,
+    status_code: int = 200,
+    headers: dict[str, str] | None = None,
+) -> PluginWebResponse:
+    """构建 JSON 响应（对齐原版 astrbot.api.web.json_response）。"""
+    import json as _json
+
+    body = _json.dumps({} if data is None else data, ensure_ascii=False).encode("utf-8")
+    merged = dict(headers or {})
+    merged.setdefault("Content-Type", "application/json")
+    return PluginWebResponse(body, status_code=status_code, headers=merged)
+
+
+def error_response(
+    message: str,
+    *,
+    status_code: int = 400,
+    data: Any = None,
+    headers: dict[str, str] | None = None,
+) -> PluginWebResponse:
+    """构建标准错误响应（对齐原版 astrbot.api.web.error_response）。"""
+    return json_response(
+        {"status": "error", "message": message, "data": data},
+        status_code=status_code,
+        headers=headers,
+    )
+
+
+def stream_response(
+    content: Any,
+    *,
+    content_type: str = "text/event-stream",
+    status_code: int = 200,
+    headers: dict[str, str] | None = None,
+) -> PluginWebResponse:
+    """构建流式响应（对齐原版签名；宿主暂不流式，一次性返回聚合内容）。"""
+    if isinstance(content, (list, tuple)):
+        chunks = content
+    else:
+        chunks = [content]
+    parts = []
+    for chunk in chunks:
+        if isinstance(chunk, bytes):
+            parts.append(chunk)
+        else:
+            parts.append(str(chunk).encode("utf-8"))
+    merged = dict(headers or {})
+    merged.setdefault("Content-Type", content_type)
+    return PluginWebResponse(b"".join(parts), status_code=status_code, headers=merged)
