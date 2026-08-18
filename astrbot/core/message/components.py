@@ -5,13 +5,41 @@
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import enum
 import json
+import logging
 import os
+import shutil
 import tempfile
 import urllib.request
+import uuid
 from pathlib import Path, PurePosixPath
+
+from astrbot.core.file_token_service import file_token_service  # noqa: F401（re-export）
+from astrbot.core.utils.astrbot_path import get_astrbot_temp_path  # noqa: F401（re-export）
+
+logger = logging.getLogger("astrbot")
+
+
+async def download_file(url: str, save_path: str | None = None) -> str:
+    """下载 url 到本地文件（Go 宿主兼容运行时）。
+
+    对齐原版 `astrbot.core.utils.io.download_file` 的调用习惯：
+    - 未指定 save_path 时下载到系统临时目录，返回临时文件路径；
+    - 下载失败不抛异常，返回空字符串（插件可据此判断失败）。
+    """
+    try:
+        tmp = await asyncio.to_thread(_download_to_temp, url)
+    except Exception as e:
+        logger.warning(f"download_file 失败: {url!r} ({e})")
+        return ""
+    if save_path is None:
+        return tmp
+    os.makedirs(os.path.dirname(os.path.abspath(save_path)) or ".", exist_ok=True)
+    shutil.move(tmp, save_path)
+    return save_path
 
 
 class ComponentType(str, enum.Enum):
@@ -171,9 +199,14 @@ class Plain(BaseMessageComponent):
 class Face(BaseMessageComponent):
     type: ComponentType = ComponentType.Face
     id: int
+    # 兼容字段：部分调用方以 face_id 访问表情 ID
+    face_id: int | None = None
 
     def __init__(self, **_) -> None:
         super().__init__(**_)
+        # face_id 缺省时与 id 保持一致，保证两处取值一致
+        if self.face_id is None and getattr(self, "id", None) is not None:
+            self.face_id = self.id
 
 
 class Record(BaseMessageComponent):
@@ -201,11 +234,92 @@ class Record(BaseMessageComponent):
     def fromBase64(bs64_data: str, **_):
         return Record(file=f"base64://{bs64_data}", **_)
 
+    @staticmethod
+    def _decode_file_uri(uri: str) -> str:
+        """解码 file:/// URI 为本地文件路径（兼容字段：别名 file_uri_to_path）。"""
+        return file_uri_to_path(uri)
+
+    async def _resolve_file_source(self) -> str:
+        """选择可用的文件源：file → url → path 三级回退，附带存在性探测。
+
+        NapCat 在 Windows 上可能只给 file 字段一个裸文件名（如 0d2bb1468a87d64414f8e563cc61c33c.amr），
+        而真实路径在 url（如 file:///C:/Users/...）或 path（如 C:\\Users\\...）中，
+        Image.convert_to_file_path 使用 self.url or self.file，Record 同样需要回退。
+        """
+        # 1) 优先尝试 file：已包含完整 URI/已知格式或本地存在时直接使用
+        if self.file:
+            file_exists = False
+            try:
+                file_exists = os.path.exists(self.file)
+            except OSError:
+                pass
+            if (
+                is_file_uri(self.file)
+                or self.file.startswith("http")
+                or self.file.startswith("base64://")
+                or self.file.startswith("data:")
+                or file_exists
+            ):
+                return self.file
+
+        # 2) 尝试 url（可能是 file:///、http 链接或本地路径）
+        if self.url:
+            url_exists = False
+            decoded_url_exists = False
+            try:
+                url_exists = os.path.exists(self.url)
+            except OSError:
+                pass
+            if is_file_uri(self.url):
+                try:
+                    decoded_url_exists = os.path.exists(file_uri_to_path(self.url))
+                except OSError:
+                    pass
+            if (
+                is_file_uri(self.url)
+                or self.url.startswith("http")
+                or self.url.startswith("data:")
+                or url_exists
+                or decoded_url_exists
+            ):
+                return self.url
+
+        # 3) 尝试 path（可能是 Windows 绝对路径如 C:\Users\...）
+        if self.path:
+            try:
+                if os.path.exists(self.path):
+                    return self.path
+            except OSError:
+                pass
+
+        # 4) 最后裸返回 file，即使不可用也要让调用方看到原始内容
+        return self.file or self.url or ""
+
     async def convert_to_file_path(self) -> str:
-        return await MediaResolver(self.file or self.url or "", media_type="audio", default_suffix=".wav").to_path()
+        """将语音统一转换为本地文件路径（网络 URL 会自动下载）。"""
+        file_source = await self._resolve_file_source()
+        if not file_source:
+            raise ValueError("No valid file or URL provided")
+        return await MediaResolver(file_source, media_type="audio", default_suffix=".wav").to_path()
 
     async def convert_to_base64(self) -> str:
-        return await MediaResolver(self.file or self.url or "", media_type="audio", default_suffix=".wav").to_base64()
+        """将语音统一转换为 base64 编码（不以 base64:// 或 data: 开头）。"""
+        file_source = await self._resolve_file_source()
+        if not file_source:
+            raise ValueError("No valid file or URL provided")
+        return await MediaResolver(file_source, media_type="audio", default_suffix=".wav").to_base64()
+
+    async def register_to_file_service(self) -> str:
+        """将语音注册到文件服务。
+
+        Go 宿主运行时无文件服务基础设施，降级为直接返回原 url（或本地文件路径），不抛异常。
+        """
+        if self.url:
+            return self.url
+        try:
+            return await self.convert_to_file_path()
+        except Exception:
+            return self.file or ""
 
 
 class Video(BaseMessageComponent):
@@ -233,11 +347,86 @@ class Video(BaseMessageComponent):
     def fromBase64(base64_data: str, **_):
         return Video(file=f"base64://{base64_data}", **_)
 
+    async def _resolve_file_source(self) -> str:
+        """选择可用的文件源：file → url → path 三级回退，附带存在性探测。"""
+        for candidate in (self.file, self.url):
+            if not candidate:
+                continue
+            candidate_exists = False
+            try:
+                candidate_exists = os.path.exists(candidate)
+            except OSError:
+                pass
+            if (
+                is_file_uri(candidate)
+                or candidate.startswith("http")
+                or candidate.startswith("base64://")
+                or candidate.startswith("data:")
+                or candidate_exists
+            ):
+                return candidate
+
+        if self.path:
+            try:
+                if os.path.exists(self.path):
+                    return self.path
+            except OSError:
+                pass
+
+        return self.file or self.url or ""
+
     async def convert_to_file_path(self) -> str:
-        return await MediaResolver(self.file or self.url or "", media_type="video", default_suffix=".mp4").to_path()
+        """将视频统一转换为本地文件路径（网络 URL 会自动下载）。"""
+        file_source = await self._resolve_file_source()
+        if not file_source:
+            raise ValueError("No valid file or URL provided")
+
+        if is_file_uri(file_source):
+            return file_uri_to_path(file_source)
+        if file_source.startswith(("http://", "https://", "base64://", "data:")):
+            return await MediaResolver(file_source, media_type="video", default_suffix=".mp4").to_path()
+        try:
+            if os.path.exists(file_source):
+                return os.path.abspath(file_source)
+        except OSError:
+            pass
+        raise ValueError(f"not a valid file: {file_source}")
 
     async def convert_to_base64(self) -> str:
-        return await MediaResolver(self.file or self.url or "", media_type="video", default_suffix=".mp4").to_base64()
+        """将视频统一转换为 base64 编码（不以 base64:// 或 data: 开头）。"""
+        file_source = await self._resolve_file_source()
+        if not file_source:
+            raise ValueError("No valid file or URL provided")
+        return await MediaResolver(file_source, media_type="video", default_suffix=".mp4").to_base64()
+
+    async def register_to_file_service(self) -> str:
+        """将视频注册到文件服务。
+
+        Go 宿主运行时无文件服务基础设施，降级为直接返回原 url（或本地文件路径），不抛异常。
+        """
+        if self.url:
+            return self.url
+        try:
+            return await self.convert_to_file_path()
+        except Exception:
+            return self.file or ""
+
+    async def to_dict(self):
+        """需要和 toDict 区分开，toDict 是同步方法。
+
+        Go 宿主运行时无文件服务，降级为兼容实现：http 源直接透传，其余原样返回 file 字段。
+        """
+        url_or_path = self.file or ""
+        if url_or_path.startswith("http://") or url_or_path.startswith("https://"):
+            payload_file = url_or_path
+        else:
+            payload_file = url_or_path
+        return {
+            "type": "video",
+            "data": {
+                "file": payload_file,
+            },
+        }
 
 
 class At(BaseMessageComponent):
@@ -332,7 +521,7 @@ class Image(BaseMessageComponent):
     url: str | None = ""
     path: str | None = ""
 
-    def __init__(self, file: str | None, **_) -> None:
+    def __init__(self, file: str | None = "", **_) -> None:
         super().__init__(file=file, **_)
 
     @staticmethod
@@ -359,10 +548,30 @@ class Image(BaseMessageComponent):
         return Image.fromBytes(IO.read())
 
     async def convert_to_file_path(self) -> str:
-        return await MediaResolver(self.url or self.file or "", media_type="image").to_path()
+        """将图片统一转换为本地文件路径（网络 URL 会自动下载）。"""
+        url = self.url or self.file
+        if not url:
+            raise ValueError("No valid file or URL provided")
+        return await MediaResolver(url, media_type="image").to_path()
 
     async def convert_to_base64(self) -> str:
-        return await MediaResolver(self.url or self.file or "", media_type="image").to_base64()
+        """将图片统一转换为 base64 编码（不以 base64:// 或 data: 开头）。"""
+        url = self.url or self.file
+        if not url:
+            raise ValueError("No valid file or URL provided")
+        return await MediaResolver(url, media_type="image").to_base64()
+
+    async def register_to_file_service(self) -> str:
+        """将图片注册到文件服务。
+
+        Go 宿主运行时无文件服务基础设施，降级为：有 url 直接返回 url，否则返回本地文件路径，不抛异常。
+        """
+        if self.url:
+            return self.url
+        try:
+            return await self.convert_to_file_path()
+        except Exception:
+            return self.file or ""
 
 
 class Reply(BaseMessageComponent):
@@ -423,9 +632,14 @@ class Poke(BaseMessageComponent):
 class Forward(BaseMessageComponent):
     type: ComponentType = ComponentType.Forward
     id: str
+    # 兼容字段：部分调用方以 forward 字段承载转发消息 ID
+    forward: str | None = None
 
     def __init__(self, **_) -> None:
         super().__init__(**_)
+        # forward 缺省时与 id 保持一致
+        if self.forward is None and getattr(self, "id", None) is not None:
+            self.forward = self.id
 
 
 class Node(BaseMessageComponent):
@@ -530,6 +744,75 @@ class File(BaseMessageComponent):
             return self._file_cache
         return self.file_ or self.url or ""
 
+    @file.setter
+    def file(self, value: str) -> None:
+        """设置 file 属性，向前兼容：传入 http(s) 链接时写入 url，否则写入 file_。"""
+        self._file_cache = None
+        if value.startswith("http://") or value.startswith("https://"):
+            self.url = value
+        else:
+            self.file_ = value
+
+    async def get_file(self, allow_return_url: bool = False) -> str:
+        """异步获取文件。请注意在使用后清理下载的文件，以免占用过多空间。
+
+        Args:
+            allow_return_url: 是否允许以 http 下载链接的形式返回，这允许您自行控制是否需要下载文件。
+            注意，如果为 True，也可能返回文件路径。
+        Returns:
+            str: 文件路径或者 http 下载链接
+
+        """
+        if allow_return_url and self.url:
+            return self.url
+
+        if self.file_:
+            path = file_uri_to_path(self.file_) if is_file_uri(self.file_) else self.file_
+            if os.path.exists(path):
+                return os.path.abspath(path)
+
+        if self.url:
+            if is_file_uri(self.url):
+                return file_uri_to_path(self.url)
+            if self.url.startswith("http://") or self.url.startswith("https://"):
+                self.file_ = _download_to_temp(self.url)
+                return os.path.abspath(self.file_)
+
+        return self.file_ or self.url or ""
+
+    async def register_to_file_service(self) -> str:
+        """将文件注册到文件服务。
+
+        Go 宿主运行时无文件服务基础设施，降级为：有 url 直接返回 url，否则返回本地文件路径，不抛异常。
+        """
+        if self.url:
+            return self.url
+        try:
+            return await self.get_file()
+        except Exception:
+            return self.file_ or ""
+
+    async def _download_file(self) -> None:
+        """下载文件到 AstrBot 临时目录，并更新 self.file_。
+
+        对齐原版 File._download_file 语义：文件名含来源文件名与随机后缀，
+        经模块级 download_file 下载（失败时 download_file 返回空串）。
+        """
+        if not self.url:
+            raise ValueError("Download failed: No URL provided in File component.")
+        download_dir = Path(get_astrbot_temp_path())
+        download_dir.mkdir(parents=True, exist_ok=True)
+        if self.name:
+            safe_name = _sanitize_file_component_name(self.name)
+            name = Path(safe_name).stem
+            ext = Path(safe_name).suffix
+            filename = f"fileseg_{name}_{uuid.uuid4().hex[:8]}{ext}"
+        else:
+            filename = f"fileseg_{uuid.uuid4().hex}"
+        file_path = download_dir / filename
+        await download_file(self.url, str(file_path))
+        self.file_ = str(file_path.resolve())
+
     def toDict(self):
         data = {"name": self.name or "file"}
         if self.file_:
@@ -540,3 +823,33 @@ class File(BaseMessageComponent):
 
     async def to_dict(self) -> dict:
         return self.toDict()
+
+
+# 组件类型注册表：键为 OneBot 段类型小写名，值为对应组件类。
+# 与 Python 本体 components.py 模块级 dict 对齐。
+ComponentTypes = {
+    # Basic Message Segments
+    "plain": Plain,
+    "text": Plain,
+    "image": Image,
+    "record": Record,
+    "video": Video,
+    "file": File,
+    # IM-specific Message Segments
+    "face": Face,
+    "at": At,
+    "rps": RPS,
+    "dice": Dice,
+    "shake": Shake,
+    "share": Share,
+    "contact": Contact,
+    "location": Location,
+    "music": Music,
+    "reply": Reply,
+    "poke": Poke,
+    "forward": Forward,
+    "node": Node,
+    "nodes": Nodes,
+    "json": Json,
+    "unknown": Unknown,
+}

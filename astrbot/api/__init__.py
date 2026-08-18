@@ -2,11 +2,12 @@ from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.provider.func_tool_manager import (
     FuncTool,
     FunctionToolManager,
-    ToolSet,
 )
+from astrbot.core.agent.tool import FunctionTool, ToolSchema, ToolSet
 
-# FunctionTool：Python 插件用 dataclass 子类化定义 LLM 工具（对齐 Python
-# 原版 astrbot.core.agent.tool.FunctionTool 的常见用法）：
+# FunctionTool / ToolSet / ToolSchema：实现本体在 astrbot.core.agent.tool
+# （普通 dataclass，无需 pydantic）。Python 插件用 dataclass 子类化定义 LLM
+# 工具（对齐 Python 原版 astrbot.core.agent.tool.FunctionTool 的常见用法）：
 #
 #     from astrbot.api import FunctionTool, logger
 #     from dataclasses import dataclass, field
@@ -21,31 +22,9 @@ from astrbot.core.provider.func_tool_manager import (
 #
 # 注意用普通 dataclass（非 pydantic）装饰，保证任意版本的插件子类都能继承。
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass as _dataclass
-from dataclasses import field as _field
+from dataclasses import dataclass as _dataclass  # noqa: F401  （插件子类化模式提示）
+from dataclasses import field as _field  # noqa: F401  （插件子类化模式提示）
 from typing import Any
-
-
-@_dataclass
-class FunctionTool:
-    """LLM 函数工具基类（嵌入式 SDK 兼容层）。
-
-    插件子类声明 name/description/parameters + async run(event, **kwargs)；
-    宿主管线经 HandleTool 调用 run，返回值（str / MessageEventResult /
-    mcp CallToolResult）会转换为文本反馈给模型。
-    """
-
-    name: str = ""
-    description: str = ""
-    parameters: dict = _field(default_factory=dict)
-    handler: Any = None
-    active: bool = True
-
-    async def call(self, context, **kwargs):
-        raise NotImplementedError(
-            "FunctionTool.call() 必须由子类实现（或实现 async run(event, **kwargs)）"
-        )
-
 
 class BaseFunctionToolExecutor:
     """LLM 函数工具执行器基类（对齐 Python 本体
@@ -132,7 +111,39 @@ class _PluginContextLogger:
 
 logger = _PluginContextLogger()
 
-html_renderer = None  # Go 宿主无 HTML 渲染
+
+class HtmlRenderer:
+    """HTML 文转图渲染器占位实现（Go 宿主无独立 HTML 模板引擎）。
+
+    render_t2i 走宿主桥 HostBridge.text_to_image_async（宿主渲染文本为
+    图片，返回 base64 PNG）解码为 PNG 字节；return_url=True 时返回
+    data:image/png;base64,... 前缀的 URL，否则返回 bytes。渲染失败返回
+    None。render_custom_template 因无模板引擎支持，始终返回 None。
+    """
+
+    async def render_t2i(self, text: str, return_url: bool = True):
+        """将文本渲染为图片，返回 data URL（默认）或 PNG 字节。"""
+        import base64
+
+        from astrbot._bridge.host import get_bridge
+
+        try:
+            png = await get_bridge().text_to_image_async(text)
+        except Exception:
+            return None
+        if not return_url:
+            return png
+        return "data:image/png;base64," + base64.b64encode(png).decode()
+
+    async def render_custom_template(self, tmpl: str, data: dict, return_url: bool = True):
+        """自定义模板渲染：Go 宿主无模板引擎，直接返回 None。"""
+        return None
+
+    async def initialize(self) -> None:
+        """初始化：无宿主资源需要预热，no-op。"""
+
+
+html_renderer = HtmlRenderer()  # 对齐原版 astrbot.core.html_renderer 的占位实例
 
 # sp：SharedPreferences 共享偏好存储（跨插件共享，作用域化），对齐 Python 本体
 # astrbot.api.sp。数据持久化在宿主数据目录 shared_preferences.json。
@@ -144,6 +155,7 @@ __all__ = [
     "FuncTool",
     "FunctionTool",
     "FunctionToolManager",
+    "ToolSchema",
     "ToolSet",
     "agent",
     "html_renderer",

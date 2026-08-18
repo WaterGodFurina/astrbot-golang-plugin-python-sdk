@@ -6,11 +6,63 @@ Context 的方法经宿主 HostService RPC 反向调用实现；宿主桥由
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, Protocol
 
+from astrbot.core.agent.hooks import BaseAgentRunHooks
+from astrbot.core.agent.message import Message
+from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
+from astrbot.core.agent.tool import ToolSet
+from astrbot.core.astrbot_config_mgr import AstrBotConfigManager
 from astrbot.core.config.astrbot_config import AstrBotConfig
+from astrbot.core.conversation_mgr import ConversationManager
+from astrbot.core.db import BaseDatabase
+from astrbot.core.exceptions import ProviderNotFoundError
+from astrbot.core.knowledge_base.kb_mgr import KnowledgeBaseManager
+from astrbot.core.message.message_event_result import MessageChain
+from astrbot.core.persona_mgr import PersonaManager
+from astrbot.core.platform import Platform
+from astrbot.core.platform.astr_message_event import AstrMessageEvent
+from astrbot.core.platform.message_session import MessageSesion
+from astrbot.core.platform.message_type import MessageType
+from astrbot.core.provider.entities import LLMResponse, ProviderRequest, ProviderType
+from astrbot.core.provider.func_tool_manager import FunctionTool, FunctionToolManager
+from astrbot.core.provider.manager import ProviderManager
+from astrbot.core.provider.provider import (
+    EmbeddingProvider,
+    Provider,
+    RerankProvider,
+    STTProvider,
+    TTSProvider,
+)
+from astrbot.core.star.filter.command import CommandFilter
+from astrbot.core.star.filter.platform_adapter_type import (
+    ADAPTER_NAME_2_TYPE,
+    PlatformAdapterType,
+)
+from astrbot.core.star.filter.regex import RegexFilter
+from astrbot.core.star.star import StarMetadata, star_map, star_registry
+from astrbot.core.star.star_handler import (
+    EventType,
+    StarHandlerMetadata,
+    star_handlers_registry,
+)
+from astrbot.core.subagent_orchestrator import SubAgentOrchestrator
+from astrbot.core.utils.astrbot_path import get_astrbot_system_tmp_path
+from astrbot.core.utils.deprecation import deprecated
+from astrbot.core.utils.message_history_manager import (
+    PlatformMessageHistoryManager,
+)
 
 logger = logging.getLogger("astrbot")
+
+# 类型别名（对齐原版 context.py：WebApiHandler 为异步视图函数类型，
+# RegisteredWebApi 为 (route, handler, methods, desc) 四元组）
+WebApiHandler = Callable[..., Awaitable[Any]]
+RegisteredWebApi = tuple[str, WebApiHandler, list[str], str]
+
+# 插件模块路径中标识插件根目录的段
+_PLUGIN_MODULE_FLAGS = {"builtin_stars", "plugins"}
 
 _host_bridge: Any = None
 
@@ -22,6 +74,77 @@ def set_host_bridge(bridge) -> None:
 
 def get_host_bridge():
     return _host_bridge
+
+
+class PlatformManagerProtocol(Protocol):
+    """平台管理器协议（对齐原版 context.py 的 Protocol 标注）。"""
+
+    platform_insts: list[Platform]
+    get_insts: Callable[[], list[Platform]]
+
+
+# ── 插件模块路径解析工具（对齐原版 context.py 模块级函数）───────────────
+def _split_module_path(module_path: Any) -> list[str]:
+    """拆分 'a.b.c' → ['a', 'b', 'c']（非字符串/空串返回 []）。"""
+    if not isinstance(module_path, str) or not module_path:
+        return []
+    return module_path.split(".")
+
+
+def _plugin_root_from_module_parts(parts: list[str]) -> tuple[str, str] | None:
+    """在模块段中找到插件根标记（builtin_stars/plugins）并返回 (flag, 根目录名)。"""
+    for index, part in enumerate(parts):
+        if part in _PLUGIN_MODULE_FLAGS and index + 1 < len(parts):
+            return part, parts[index + 1]
+    return None
+
+
+def _plugin_root_from_metadata(metadata: StarMetadata) -> str | None:
+    """从插件元数据解析插件根目录名（优先 root_dir_name）。"""
+    if metadata.root_dir_name:
+        return metadata.root_dir_name
+    root_info = _plugin_root_from_module_parts(_split_module_path(metadata.module_path))
+    return root_info[1] if root_info else None
+
+
+def _registered_plugin_module_path(root_dir_name: str, flag: str | None) -> str | None:
+    """按根目录名反查已注册插件的模块路径。"""
+    for metadata in reversed(star_registry):
+        if not metadata.module_path:
+            continue
+        if _plugin_root_from_metadata(metadata) != root_dir_name:
+            continue
+        if flag and flag not in _split_module_path(metadata.module_path):
+            continue
+        return metadata.module_path
+    return None
+
+
+def _legacy_plugin_module_path(parts: list[str]) -> str:
+    """将 'a.plugins.b.c' 风格的模块段解析为 'a.plugins.b.main'。"""
+    resolved_parts = []
+    for index, part in enumerate(parts):
+        resolved_parts.append(part)
+        if part in _PLUGIN_MODULE_FLAGS and index + 1 < len(parts):
+            resolved_parts.append(parts[index + 1])
+            resolved_parts.append("main")
+            break
+    return ".".join(resolved_parts)
+
+
+def _resolve_tool_handler_module_path(tool: FunctionTool) -> str:
+    """解析 LLM 工具的宿主模块路径（对齐原版语义，SDK 简化实现）。"""
+    module_path = getattr(tool, "__module__", None)
+    module_parts = _split_module_path(module_path)
+    if not module_parts:
+        return module_path if isinstance(module_path, str) else ""
+    root_info = _plugin_root_from_module_parts(module_parts)
+    if root_info:
+        flag, root_dir_name = root_info
+        registered_module_path = _registered_plugin_module_path(root_dir_name, flag)
+        return registered_module_path or _legacy_plugin_module_path(module_parts)
+    registered_module_path = _registered_plugin_module_path(module_parts[0], "plugins")
+    return registered_module_path or ".".join(module_parts)
 
 
 class _PlatformManagerStub:
@@ -68,10 +191,34 @@ class Context:
         self.persona_mgr = self.persona_manager
         self.conversation_manager = ConversationManager(self._bridge)
         self._star_manager = PluginManager(context=self, bridge=self._bridge)
+        # 消息历史管理器（JSON 文件持久化，对齐本体 Context.message_history_manager）
+        from astrbot.core.utils.message_history_manager import (
+            PlatformMessageHistoryManager,
+        )
+
+        self.message_history_manager = PlatformMessageHistoryManager()
+        # 定时任务管理器（暴露 apscheduler 风格 .scheduler，对齐本体
+        # Context.cron_manager，插件通过 context.cron_manager.scheduler 调度）
+        from astrbot.core.utils.cron_manager import CronJobManager
+
+        self.cron_manager = CronJobManager()
         # register_task 跟踪的任务（terminate 时取消）
         self._tasks: list[Any] = []
         # register_web_api 注册的 Web API：[(route, handler, methods, desc)]
         self._web_apis: list[tuple] = []
+
+    @property
+    def registered_web_apis(self) -> list[tuple]:
+        """已注册的 Web API 列表（对齐本体 Context.registered_web_apis）。
+
+        插件可直接改写（如 `routes[:] = [...]` 清空重载）。
+        """
+        return self._web_apis
+
+    @registered_web_apis.setter
+    def registered_web_apis(self, value) -> None:
+        """设置器：直接替换内部列表（兼容插件整表赋值）。"""
+        self._web_apis = value
 
     def _bridge(self):
         if _host_bridge is None:
@@ -166,6 +313,14 @@ class Context:
             return self.provider_manager.stt_provider_insts
         except Exception as e:
             logger.warning(f"get_all_stt_providers 失败: {e}")
+            return []
+
+    def get_all_embedding_providers(self) -> list:
+        """获取所有用于 Embedding 任务的 Provider（同步，经宿主桥 list_providers）。"""
+        try:
+            return self.provider_manager.embedding_provider_insts
+        except Exception as e:
+            logger.warning(f"get_all_embedding_providers 失败: {e}")
             return []
 
     def get_using_provider(self, umo: str | None = None):

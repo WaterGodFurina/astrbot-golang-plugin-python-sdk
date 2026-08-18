@@ -11,8 +11,144 @@ plugin.activated / plugin.module_path / plugin.version）。
 """
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
+import tempfile
+from dataclasses import dataclass
+from enum import Enum, auto
 from typing import Any
+
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.version import InvalidVersion, Version
+
+from astrbot.core import DependencyConflictError, logger
+from astrbot.core.config.default import VERSION
+from astrbot.core.platform.register import unregister_platform_adapters_by_module
+from astrbot.core.provider.func_tool_manager import llm_tools
+from astrbot.core.star.command_management import sync_command_configs
+from astrbot.core.star.error_messages import format_plugin_error
+from astrbot.core.star.filter.permission import PermissionType, PermissionTypeFilter
+from astrbot.core.star.updater import PLUGIN_METADATA_FILENAMES, _PluginUpdater
+from astrbot.core.utils.astrbot_path import (
+    get_astrbot_config_path,
+    get_astrbot_plugin_path,
+    get_astrbot_temp_path,
+)
+from astrbot.core.utils.io import remove_dir
+from astrbot.core.utils.metrics import Metric
+from astrbot.core.utils.requirements_utils import (
+    MissingRequirementsPlan,
+    plan_missing_requirements_install,
+)
+from astrbot.core.utils.shared_preferences import sp
+
+# ── 模块级常量与符号（对齐原版 star_manager.py 顶部定义）──────────────────
+PLUGIN_TOOL_STATE_MIGRATION_KEY = "inactivated_llm_tools_plugin_state_migrated_v1"
+"""旧版插件工具失效状态迁移标记键（对齐原版值）。"""
+
+
+class PluginVersionUnsupportedError(Exception):
+    """当插件 astrbot_version 不受当前 AstrBot 支持时抛出。"""
+
+
+class PluginDependencyInstallError(Exception):
+    """当插件依赖安装失败时抛出。"""
+
+    def __init__(
+        self,
+        *,
+        plugin_label: str,
+        requirements_path: str,
+        error: Exception,
+    ) -> None:
+        message = f"Failed to install dependencies for plugin {plugin_label}: {error!s}"
+        super().__init__(message)
+        self.plugin_label = plugin_label
+        self.requirements_path = requirements_path
+        self.error = error
+
+
+class ImportDependencyRecoveryMode(Enum):
+    """插件依赖导入失败后的恢复模式（对齐原版取值）。"""
+
+    DISABLED = auto()
+    PRELOAD_AND_RECOVER = auto()
+    RECOVER_ON_FAILURE = auto()
+    REINSTALL_ON_FAILURE = auto()
+
+
+@dataclass(frozen=True)
+class ImportDependencyRecoveryState:
+    """依赖导入恢复状态（对齐原版 frozen dataclass）。"""
+
+    mode: ImportDependencyRecoveryMode
+    install_plan: MissingRequirementsPlan | None = None
+
+
+@contextlib.contextmanager
+def _temporary_filtered_requirements_file(
+    *,
+    install_lines: tuple[str, ...],
+):
+    """在临时目录创建仅含待安装依赖行的临时 requirements 文件。"""
+    filtered_requirements_path: str | None = None
+    temp_dir = get_astrbot_temp_path()
+    try:
+        os.makedirs(temp_dir, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix="_plugin_requirements.txt",
+            delete=False,
+            dir=temp_dir,
+            encoding="utf-8",
+        ) as filtered_requirements_file:
+            filtered_requirements_file.write("\n".join(install_lines) + "\n")
+            filtered_requirements_path = filtered_requirements_file.name
+        yield filtered_requirements_path
+    finally:
+        if filtered_requirements_path and os.path.exists(filtered_requirements_path):
+            try:
+                os.remove(filtered_requirements_path)
+            except OSError as exc:
+                logger.warning(
+                    "Failed to remove the temporary plugin requirements file: %s "
+                    "(path: %s)",
+                    exc,
+                    filtered_requirements_path,
+                )
+
+
+async def _install_requirements_with_precheck(
+    *,
+    plugin_label: str,
+    requirements_path: str,
+) -> None:
+    """安装插件依赖（SDK 降级：预检查缺失项后打印日志，实际安装由宿主完成）。"""
+    install_plan = plan_missing_requirements_install(requirements_path)
+
+    if install_plan is None:
+        logger.info(
+            f"Installing dependencies for plugin {plugin_label}; the missing-"
+            "dependency precheck could not safely reduce the requirements, so "
+            "the complete requirements file will be installed: "
+            f"{requirements_path}"
+        )
+        return
+
+    if not install_plan.missing_names:
+        logger.info(
+            f"Dependencies for plugin {plugin_label} are already satisfied; "
+            "skipping installation."
+        )
+        return
+
+    logger.info(
+        f"Plugin {plugin_label} has missing dependencies; installing them from "
+        "requirements.txt: "
+        f"{requirements_path} -> {sorted(install_plan.missing_names)}"
+    )
+
 
 logger = logging.getLogger("astrbot")
 

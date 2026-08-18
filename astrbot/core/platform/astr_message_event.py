@@ -5,22 +5,43 @@ API 与 Python 本体 `astrbot.core.platform.AstrMessageEvent` 对齐。
 from __future__ import annotations
 
 import abc
+import asyncio
 import logging
+import os
+import re
+from collections.abc import AsyncGenerator
 from time import time
 from typing import Any
 
-from astrbot.core.message.components import BaseMessageComponent
+from astrbot.core.conversation_mgr import Conversation
+from astrbot.core.message.components import (
+    At,
+    AtAll,
+    BaseMessageComponent,
+    Face,
+    Forward,
+    Image,
+    Plain,
+    Reply,
+)
 from astrbot.core.message.message_event_result import (
     MessageChain,
     MessageEventResult,
 )
 from astrbot.core.platform.message_type import MessageType
-from astrbot.core.platform.message_session import MessageSession
+from astrbot.core.platform.message_session import MessageSession, MessageSesion  # noqa: F401
+from astrbot.core.provider.entities import ProviderRequest
+from astrbot.core.utils.deprecation import deprecated
+from astrbot.core.utils.metrics import Metric
+from astrbot.core.utils.trace import TraceSpan
 
 from .astrbot_message import AstrBotMessage, Group, MessageMember
 from .platform_metadata import PlatformMetadata
 
 logger = logging.getLogger("astrbot")
+
+# 兼容旧 SDK 的占位类名：统一指向 utils.trace.TraceSpan 简化实现
+TraceSpanPlaceholder = TraceSpan
 
 
 class AstrMessageEvent(abc.ABC):
@@ -57,6 +78,17 @@ class AstrMessageEvent(abc.ABC):
         )
         self._result: MessageEventResult | None = None
         self.created_at = time()
+        self.trace = TraceSpan(
+            name="AstrMessageEvent",
+            umo=self.unified_msg_origin,
+            sender_name=self.get_sender_name(),
+            message_outline=self.get_message_outline(),
+        )
+        """用于记录事件处理的 TraceSpan（SDK 为轻量实现，不真正上报）"""
+        self.span = self.trace
+        """事件级 TraceSpan（别名: span）"""
+        self._temporary_local_files: list[str] = []
+        """本次事件期间创建的临时本地文件列表，事件结束时安全删除"""
         self._has_send_oper = False
         self.call_llm = False
         self.plugins_name: list[str] | None = None
@@ -94,7 +126,6 @@ class AstrMessageEvent(abc.ABC):
     def _outline_chain(self, chain: list[BaseMessageComponent] | None) -> str:
         if not chain:
             return ""
-        from astrbot.core.message.components import Image, Plain
 
         parts = []
         for i in chain:
@@ -102,6 +133,23 @@ class AstrMessageEvent(abc.ABC):
                 parts.append(i.text)
             elif isinstance(i, Image):
                 parts.append("[图片]")
+            elif isinstance(i, Face):
+                parts.append(f"[表情:{i.id}]")
+            elif isinstance(i, At):
+                parts.append(f"[At:{i.qq}]")
+            elif isinstance(i, AtAll):
+                parts.append("[At:全体成员]")
+            elif isinstance(i, Forward):
+                # 转发消息
+                parts.append("[转发消息]")
+            elif isinstance(i, Reply):
+                # 引用回复
+                if i.message_str:
+                    parts.append(f"[引用消息({i.sender_nickname}: {i.message_str})]")
+                else:
+                    parts.append("[引用消息]")
+            else:
+                parts.append(f"[{i.type}]")
         return " ".join(parts)
 
     def get_message_outline(self) -> str:
@@ -147,6 +195,27 @@ class AstrMessageEvent(abc.ABC):
     def clear_extra(self) -> None:
         self._extras.clear()
 
+    def track_temporary_local_file(self, path: str) -> None:
+        """登记一个临时本地文件，事件结束后由 cleanup_temporary_local_files
+        统一清理（去重登记）。"""
+        if path and path not in self._temporary_local_files:
+            self._temporary_local_files.append(path)
+
+    def cleanup_temporary_local_files(self) -> None:
+        """删除本次事件登记的全部临时本地文件（存在才删，忽略删除错误）。"""
+        paths = list(self._temporary_local_files)
+        self._temporary_local_files.clear()
+        for path in paths:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except OSError as e:
+                logger.warning(
+                    "Failed to remove temporary local file %s: %s",
+                    path,
+                    e,
+                )
+
     def is_private_chat(self) -> bool:
         return self.session.message_type == MessageType.FRIEND_MESSAGE
 
@@ -156,9 +225,91 @@ class AstrMessageEvent(abc.ABC):
     def is_admin(self) -> bool:
         return self.role == "admin"
 
+    async def process_buffer(self, buffer: str, pattern: re.Pattern) -> str:
+        """将消息缓冲区中的文本按指定正则表达式分割后逐段发送至消息平台，
+        作为不支持流式输出平台的 Fallback（对齐本体：间隔 1.5s 限速）。
+        返回剩余未匹配的缓冲区文本。
+        """
+        while True:
+            match = re.search(pattern, buffer)
+            if not match:
+                break
+            matched_text = match.group().strip()
+            if matched_text:
+                await self.send(MessageChain([Plain(matched_text)]))
+                await asyncio.sleep(1.5)  # 限速
+            buffer = buffer[match.end() :]
+        return buffer
+
+    async def send_streaming(
+        self,
+        generator: AsyncGenerator[MessageChain, None],
+        use_fallback: bool = False,
+    ) -> None:
+        """发送流式消息到消息平台（基类实现），使用异步生成器。
+
+        - use_fallback=False：遍历生成器，逐段调用 send 发送。
+        - use_fallback=True：不支持原生流式输入的平台——聚合缓冲，借
+          process_buffer 按标点切分发送。
+
+        对齐本体 280-292 行语义：发送操作标记 _has_send_oper（阻止管线
+        继续走默认 LLM）。aiocqhttp 等平台子类可覆盖本方法提供原生流式
+        输入。
+        """
+        self._has_send_oper = True
+        asyncio.create_task(
+            Metric.upload(msg_event_tick=1, adapter_name=self.platform_meta.name),
+        )
+        if not use_fallback:
+            async for chain in generator:
+                await self.send(chain)
+            return
+
+        buffer = ""
+        pattern = re.compile(r"[^。？！~…]+[。？！~…]+")
+
+        async for chain in generator:
+            if isinstance(chain, MessageChain):
+                for comp in chain.chain:
+                    if isinstance(comp, Plain):
+                        buffer += comp.text
+                        if any(p in buffer for p in "。？！~…"):
+                            buffer = await self.process_buffer(buffer, pattern)
+                    else:
+                        await self.send(MessageChain(chain=[comp]))
+                        await asyncio.sleep(1.5)  # 限速
+
+        buffer = buffer.strip()
+        if buffer:
+            await self.send(MessageChain([Plain(buffer)]))
+
+    async def send_typing(self) -> None:
+        """发送输入中状态。
+
+        默认实现为空，由具体平台按需重写（对齐本体基类 no-op）。
+        """
+
+    async def stop_typing(self) -> None:
+        """停止输入中状态。
+
+        默认实现为空，由具体平台按需重写（对齐本体基类 no-op）。
+        """
+
+    # 已废弃（v3.5.18 起消息调度器不再调用这两个钩子，保留空实现兼容）。
+    @deprecated(version="3.5.18", reason="No longer invoked by the message scheduler.")
+    async def _pre_send(self) -> None:
+        """调度器会在执行 send() 前调用该方法（已废弃，保留空实现兼容）。"""
+
+    @deprecated(version="3.5.18", reason="No longer invoked by the message scheduler.")
+    async def _post_send(self) -> None:
+        """调度器会在执行 send() 后调用该方法（已废弃，保留空实现兼容）。"""
+
     def set_result(self, result: MessageEventResult | str) -> None:
         if isinstance(result, str):
             result = MessageEventResult().message(result)
+        # 兼容外部插件或调用方传入的 chain=None 的情况，确保为可迭代列表
+        if isinstance(result, MessageEventResult) and result.chain is None:
+            result.chain = []
         self._result = result
 
     def stop_event(self) -> None:
@@ -193,8 +344,9 @@ class AstrMessageEvent(abc.ABC):
         self._result = None
 
     def make_result(self) -> MessageEventResult:
-        self._result = MessageEventResult()
-        return self._result
+        """创建一个空的消息事件结果（对齐本体：不写入 self._result，
+        只返回新实例）。"""
+        return MessageEventResult()
 
     def plain_result(self, text: str) -> MessageEventResult:
         return MessageEventResult().message(text)
@@ -219,12 +371,10 @@ class AstrMessageEvent(abc.ABC):
         audio_urls: list[str] | None = None,
         contexts: list | None = None,
         system_prompt: str = "",
-        conversation=None,
+        conversation: Conversation | None = None,
     ):
         """创建 LLM 请求。Go 宿主桥：返回的 ProviderRequest 会以
         llm_continue 方式反馈宿主继续走默认 LLM（提示词为本消息原文）。"""
-        from astrbot.core.provider.entities import ProviderRequest
-
         if image_urls is None:
             image_urls = []
         if audio_urls is None:
@@ -257,6 +407,9 @@ class AstrMessageEvent(abc.ABC):
             logger.warning("send(): 宿主桥未就绪，消息未发送")
             return
         self._has_send_oper = True
+        asyncio.create_task(
+            Metric.upload(msg_event_tick=1, adapter_name=self.platform_meta.name),
+        )
         # send_message 是同步 RPC（grpc-python 阻塞调用），不能 await。
         bridge.send_message(self.session, message)
 

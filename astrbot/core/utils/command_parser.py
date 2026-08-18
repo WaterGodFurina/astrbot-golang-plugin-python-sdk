@@ -18,6 +18,16 @@ class CommandTokens:
     def __iter__(self):
         return iter(self.tokens)
 
+    def get(self, idx: int, default: str | None = None) -> str | None:
+        """按下标取 token（对齐原版 command_parser.py 的 get）。
+
+        越界返回 default（默认 None），否则返回去首尾空白的 token。
+        """
+        tokens = self.tokens or []
+        if idx < 0 or idx >= len(tokens):
+            return default
+        return tokens[idx].strip()
+
 
 class CommandParserMixin:
     def parse_commands(self, message: str) -> CommandTokens:

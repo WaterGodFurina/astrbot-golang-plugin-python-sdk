@@ -20,7 +20,13 @@ from collections.abc import Callable
 from typing import Any
 
 from astrbot.core.provider.entities import ProviderType
-from astrbot.core.provider.provider import Provider, STTProvider, TTSProvider
+from astrbot.core.provider.provider import (
+    EmbeddingProvider,
+    Provider,
+    RerankProvider,
+    STTProvider,
+    TTSProvider,
+)
 from astrbot.core.utils.error_redaction import safe_error
 
 logger = logging.getLogger("astrbot")
@@ -34,12 +40,27 @@ _PROVIDER_TYPE_TO_CAPABILITY: dict[ProviderType, str] = {
     ProviderType.RERANK: "rerank",
 }
 
+# 宿主能力字符串 → 包装类（list_providers/get_using_provider 据此构造实例）
+_PROVIDER_CLS_MAP: dict[str, type] = {
+    "chat_completion": Provider,
+    "text_to_speech": TTSProvider,
+    "speech_to_text": STTProvider,
+    "embedding": EmbeddingProvider,
+    "rerank": RerankProvider,
+}
+
 
 def _to_capability(provider_type: ProviderType | str) -> str:
     """把 ProviderType 枚举或能力字符串归一化为宿主能力字符串。"""
     if isinstance(provider_type, ProviderType):
         return _PROVIDER_TYPE_TO_CAPABILITY.get(provider_type, provider_type.value)
     return str(provider_type)
+
+
+def _wrap_provider(data: dict, capability: str, bridge) -> Provider:
+    """按宿主能力字符串选择包装类构造 Provider 实例。"""
+    cls = _PROVIDER_CLS_MAP.get(capability, Provider)
+    return cls(data, _bridge_getter=bridge)
 
 
 class ProviderManager:
@@ -51,6 +72,11 @@ class ProviderManager:
         # 人格相关属性（v4.0.0 后废弃但仍被插件读取）
         self._provider_change_callback: Callable[[str, ProviderType, str | None], None] | None = None
         self._provider_change_hooks: list[Callable[[str, ProviderType, str | None], None]] = []
+        # 当前使用中的 Provider 实例缓存（get_using_provider 结果缓存，
+        # 对齐本体 provider_manager.curr_*_provider_inst 属性）
+        self.curr_provider_inst: Provider | None = None
+        self.curr_stt_provider_inst: STTProvider | None = None
+        self.curr_tts_provider_inst: TTSProvider | None = None
 
     def _bridge(self):
         if self._bridge_getter is None:
@@ -108,7 +134,7 @@ class ProviderManager:
             logger.warning(f"list_providers({capability}) 失败: {e}")
             return []
         return [
-            Provider(item, _bridge_getter=self._bridge)
+            _wrap_provider(item, capability, self._bridge)
             for item in raw
             if isinstance(item, dict)
         ]
@@ -134,6 +160,16 @@ class ProviderManager:
         return self._list_providers("speech_to_text")
 
     @property
+    def embedding_provider_insts(self) -> list[EmbeddingProvider]:
+        """已加载的 Embedding Provider 实例列表（对齐本体同名属性）。"""
+        return self._list_providers("embedding")
+
+    @property
+    def rerank_provider_insts(self) -> list[RerankProvider]:
+        """已加载的 Rerank Provider 实例列表（对齐本体同名属性）。"""
+        return self._list_providers("rerank")
+
+    @property
     def inst_map(self) -> dict[str, Provider]:
         """Provider 实例映射（key: provider_id）。每次访问向宿主拉取最新列表。"""
         return {p.meta_id: p for p in self._list_providers()}
@@ -149,38 +185,58 @@ class ProviderManager:
         return self.inst_map.get(provider_id)
 
     # ── 当前使用的 Provider ────────────────────────────────────────────────
+    def _cache_curr_provider(self, inst: Provider | None, capability: str) -> None:
+        """按能力把 get_using_provider 的结果缓存到对应 curr_* 属性。"""
+        if capability == "chat_completion":
+            self.curr_provider_inst = inst
+        elif capability == "speech_to_text":
+            self.curr_stt_provider_inst = inst
+        elif capability == "text_to_speech":
+            self.curr_tts_provider_inst = inst
+
     def get_using_provider(
         self,
-        capability: str = "chat_completion",
+        capability: ProviderType | str = "chat_completion",
         umo: str | None = None,
     ) -> Provider | None:
         """获取正在使用的 Provider 实例（同步；宿主桥同步 RPC）。
 
-        capability: chat_completion / text_to_speech / speech_to_text。
+        第一参数兼容两种传法（对齐本体签名）：
+        - ProviderType 枚举（如 ProviderType.CHAT_COMPLETION → "chat_completion"）
+        - 宿主能力字符串（如 "chat_completion"，SDK 原有用法）
+
+        结果缓存到 curr_provider_inst / curr_stt_provider_inst /
+        curr_tts_provider_inst 对应属性。
         """
+        capability = _to_capability(capability)
         try:
             data = self._bridge().get_using_provider(umo or "", capability)
         except Exception as e:
             logger.warning(f"get_using_provider({capability}) 失败: {e}")
             return None
-        if not isinstance(data, dict) or not data:
-            return None
-        return Provider(data, _bridge_getter=self._bridge)
+        inst = None
+        if isinstance(data, dict) and data:
+            inst = _wrap_provider(data, capability, self._bridge)
+        self._cache_curr_provider(inst, capability)
+        return inst
 
     async def get_using_provider_async(
         self,
-        capability: str = "chat_completion",
+        capability: ProviderType | str = "chat_completion",
         umo: str | None = None,
     ) -> Provider | None:
-        """获取正在使用的 Provider 实例（异步版）。"""
+        """获取正在使用的 Provider 实例（异步版，签名同 get_using_provider）。"""
+        capability = _to_capability(capability)
         try:
             data = await self._bridge().get_using_provider_async(umo or "", capability)
         except Exception as e:
             logger.warning(f"get_using_provider_async({capability}) 失败: {e}")
             return None
-        if not isinstance(data, dict) or not data:
-            return None
-        return Provider(data, _bridge_getter=self._bridge)
+        inst = None
+        if isinstance(data, dict) and data:
+            inst = _wrap_provider(data, capability, self._bridge)
+        self._cache_curr_provider(inst, capability)
+        return inst
 
     # ── 切换 Provider ──────────────────────────────────────────────────────
     async def set_provider(
@@ -218,6 +274,8 @@ class ProviderManager:
             raise ValueError(
                 f"Provider {provider_id} does not exist and cannot be set."
             )
+        # 切换成功后失效对应能力的当前 Provider 缓存
+        self._cache_curr_provider(None, capability)
         self._notify_provider_changed(provider_id, provider_type, umo)
 
     # ── Provider 变更回调（插件用于失效模型列表缓存）───────────────────────

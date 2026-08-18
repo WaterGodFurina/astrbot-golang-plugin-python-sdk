@@ -8,6 +8,9 @@ import enum
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from astrbot.core.star.filter import HandlerFilter
+from astrbot.core.star.star import star_map
+
 
 class EventType(enum.Enum):
     """表示一个 AstrBot 内部事件的类型。"""

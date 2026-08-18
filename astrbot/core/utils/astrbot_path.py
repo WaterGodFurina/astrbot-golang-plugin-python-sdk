@@ -3,11 +3,35 @@
 宿主子进程的 ASTRBOT_DATA_PATH 指向宿主数据目录（data/）。
 """
 import os
+import tempfile
 
 
 def get_astrbot_data_path() -> str:
     """返回 AstrBot 数据目录（宿主注入 ASTRBOT_DATA_PATH，缺省为 cwd）。"""
     return os.environ.get("ASTRBOT_DATA_PATH", os.getcwd())
+
+
+def get_astrbot_root() -> str:
+    """返回 AstrBot 根目录。
+
+    Go 宿主无独立源码树，简单返回数据目录（ASTRBOT_DATA_PATH）或 cwd。
+    """
+    return get_astrbot_data_path()
+
+
+def get_astrbot_path() -> str:
+    """返回 AstrBot 项目路径（占位实现）。
+
+    Go 宿主无源码树概念，简单返回数据目录或 cwd。
+    """
+    return get_astrbot_data_path()
+
+
+def get_astrbot_temp_path() -> str:
+    """返回 AstrBot 临时数据目录（数据目录下 temp，不存在则创建）。"""
+    path = os.path.realpath(os.path.join(get_astrbot_data_path(), "temp"))
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
 def get_astrbot_plugin_path() -> str:
@@ -24,3 +48,13 @@ def get_astrbot_plugin_data_path() -> str:
 
 def get_astrbot_webui_path() -> str:
     return os.path.join(get_astrbot_data_path(), "webui")
+
+
+def get_astrbot_system_tmp_path() -> str:
+    """返回共享的系统临时目录（本地工具使用），对齐 Python 本体。
+
+    实现为 ``tempfile.gettempdir()/.astrbot``，不存在则创建。
+    """
+    path = os.path.realpath(os.path.join(tempfile.gettempdir(), ".astrbot"))
+    os.makedirs(path, exist_ok=True)
+    return path

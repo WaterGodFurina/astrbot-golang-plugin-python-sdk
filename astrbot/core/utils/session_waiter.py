@@ -30,6 +30,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+import astrbot.core.message.components as Comp
 from astrbot.core.platform import AstrMessageEvent
 
 logger = logging.getLogger("astrbot.session_waiter")
@@ -50,7 +51,7 @@ class SessionController:
         self.timeout: float | int | None = None
         """上次保持(keep)开始时的超时时间"""
 
-        self.history_chains: list[list[Any]] = []
+        self.history_chains: list[list[Comp.BaseMessageComponent]] = []
 
     def stop(self, error: Exception | None = None) -> None:
         """立即结束这个会话"""
@@ -105,7 +106,7 @@ class SessionController:
             pass  # 避免报错
         # finally:
 
-    def get_history_chains(self) -> list[list[Any]]:
+    def get_history_chains(self) -> list[list[Comp.BaseMessageComponent]]:
         """获取历史消息链"""
         return self.history_chains
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from astrbot.core import html_renderer
+from astrbot.core.log import LogManager
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.star.star import StarMetadata, star_map, star_registry
 from astrbot.core.utils.command_parser import CommandParserMixin

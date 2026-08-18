@@ -1,6 +1,13 @@
-"""旧式插件配置 API 兼容（参考 Python astrbot.core.star.config）。"""
+"""旧式插件配置 API 兼容（参考 Python astrbot.core.star.config）。
+
+对齐原版模块顶部 import（json / os / get_astrbot_data_path），
+实现上委托 AstrBotConfig 的静态方法（逻辑不变）。
+"""
+import json
+import os
 
 from astrbot.core.config.astrbot_config import AstrBotConfig
+from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 
 def load_config(namespace: str) -> dict | bool:
