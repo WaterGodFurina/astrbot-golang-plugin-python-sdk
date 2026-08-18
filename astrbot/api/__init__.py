@@ -20,9 +20,11 @@ from astrbot.core.provider.func_tool_manager import (
 #         async def run(self, event, **kwargs) -> str: ...
 #
 # 注意用普通 dataclass（非 pydantic）装饰，保证任意版本的插件子类都能继承。
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass as _dataclass
 from dataclasses import field as _field
 from typing import Any
+
 
 @_dataclass
 class FunctionTool:
@@ -42,6 +44,61 @@ class FunctionTool:
     async def call(self, context, **kwargs):
         raise NotImplementedError(
             "FunctionTool.call() 必须由子类实现（或实现 async run(event, **kwargs)）"
+        )
+
+
+class BaseFunctionToolExecutor:
+    """LLM 函数工具执行器基类（对齐 Python 本体
+    astrbot.core.agent.tool_executor.BaseFunctionToolExecutor）。
+
+    Go 宿主无自定义工具执行器管线，这里提供轻量默认实现：依次尝试
+    调用 tool 的 handler / call() / run() 后，yield 工具结果（文本）。
+    插件可继承本类并覆写 execute() 实现自己的工具调用逻辑。
+    """
+
+    @classmethod
+    async def execute(
+        cls,
+        tool: FunctionTool,
+        run_context: Any,
+        **tool_args: Any,
+    ) -> AsyncGenerator[Any, None]:
+        """执行一次工具调用，yield 工具结果。
+
+        Args:
+            tool: 要执行的函数工具（FunctionTool 或其子类实例）
+            run_context: 运行上下文（宿主传入，通常为 Context 包装）
+            tool_args: 工具调用参数
+
+        Yields:
+            工具执行结果（str / MessageEventResult / 任意对象）
+        """
+        import inspect
+
+        if tool.handler is not None and callable(tool.handler):
+            result = tool.handler(**tool_args)
+            if inspect.isawaitable(result):
+                result = await result
+            yield result
+            return
+
+        # 依次尝试 call() / run()：基类 call() 默认抛 NotImplementedError
+        #（异步方法需 await 后才抛出），视为"未实现"并回退到下一个候选
+        for caller_name in ("call", "run"):
+            caller = getattr(tool, caller_name, None)
+            if not callable(caller):
+                continue
+            try:
+                result = caller(run_context, **tool_args)
+                if inspect.isawaitable(result):
+                    result = await result
+            except NotImplementedError:
+                continue
+            yield result
+            return
+
+        raise NotImplementedError(
+            "工具既无 handler，也未实现 call()/run()，无法执行"
         )
 
 
@@ -83,6 +140,7 @@ from astrbot.core.utils.shared_preferences import sp  # noqa: E402
 
 __all__ = [
     "AstrBotConfig",
+    "BaseFunctionToolExecutor",
     "FuncTool",
     "FunctionTool",
     "FunctionToolManager",

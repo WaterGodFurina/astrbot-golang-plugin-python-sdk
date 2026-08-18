@@ -59,6 +59,17 @@ class ProviderManager:
             return self._bridge_getter()
         return self._bridge_getter
 
+    @property
+    def llm_tools(self):
+        """LLM 函数工具注册表（对齐本体 provider_manager.llm_tools）。
+
+        返回 astrbot.core.provider.func_tool_manager 的 llm_tools 单例，
+        插件可用 `provider_manager.llm_tools.remove_func(...)` 等。
+        """
+        from astrbot.core.provider.func_tool_manager import llm_tools
+
+        return llm_tools
+
     # ── 人格（对齐本体 provider_manager.personas，/persona 命令用）──────────
     @property
     def personas(self) -> list[dict]:

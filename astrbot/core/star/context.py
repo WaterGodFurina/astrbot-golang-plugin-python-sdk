@@ -24,6 +24,27 @@ def get_host_bridge():
     return _host_bridge
 
 
+class _PlatformManagerStub:
+    """轻量 PlatformManager 占位（Go 宿主无平台实例体系）。
+
+    至少提供 get_insts() 返回 [] 与 platform_insts 属性，让插件
+    `hasattr(context.platform_manager, ...)` 守卫不静默降级；
+    插件依赖真实平台实例（如 Telegram 预览回调）时仍不可用但不会崩。
+    """
+
+    def __init__(self) -> None:
+        self.platform_insts: list[Any] = []
+        self.platform_insts_map: dict[str, Any] = {}
+
+    def get_insts(self) -> list:
+        """获取平台实例列表（占位：恒为 []）。"""
+        return []
+
+    def get_platform(self, platform_id: str) -> Any | None:
+        """按平台 ID 获取实例（占位：恒为 None）。"""
+        return None
+
+
 class Context:
     """插件上下文：宿主能力代理。"""
 
@@ -32,6 +53,8 @@ class Context:
         self._config_loaded: bool = False
         self.plugin_name: str = ""
         self.plugin_id: str = ""
+        # 平台管理器占位（对齐本体 Context.platform_manager 属性）
+        self.platform_manager = _PlatformManagerStub()
         # 管理器（对齐 Python 本体 Context：provider_manager / persona_manager
         # / conversation_manager / persona_mgr（别名）/ _star_manager）
         from astrbot.core.conversation_mgr import ConversationManager
@@ -63,14 +86,25 @@ class Context:
         if self._config_loaded:
             return self._config or AstrBotConfig()
         try:
-            data = self._bridge().get_config(self.plugin_name)
+            bridge = self._bridge()
+            data = bridge.get_config(self.plugin_name)
             if isinstance(data, dict):
                 self._config = AstrBotConfig(data)
+                # 绑定宿主桥与插件名：config.save_config() 写回宿主需要
+                self._config._bridge = bridge
+                self._config._plugin_name = self.plugin_name
                 self._config_loaded = True
                 return self._config
         except Exception as e:
             logger.warning(f"get_config() 拉取配置失败: {e}")
-        return AstrBotConfig()
+        # 拉取失败也绑定宿主桥，保证 save_config 仍能写回宿主
+        cfg = AstrBotConfig()
+        try:
+            cfg._bridge = self._bridge()
+            cfg._plugin_name = self.plugin_name
+        except Exception:
+            pass
+        return cfg
 
     # ── 插件（Star）管理 ───────────────────────────────────────────────────
     def get_all_stars(self) -> list:
@@ -175,6 +209,25 @@ class Context:
             capability="speech_to_text",
             umo=umo,
         )
+
+    async def get_current_chat_provider_id(self, umo: str | None = None):
+        """获取会话当前使用的 chat provider id（对齐本体同名方法）。
+
+        Args:
+            umo: unified_message_origin。消息会话来源 ID。
+
+        Returns:
+            指定会话当前使用的聊天 Provider 的 id；未找到返回 None
+            （本体抛 ProviderNotFoundError，为兼容插件 try/except 返回 None）。
+        """
+        try:
+            prov = await self.get_using_provider_async(umo)
+        except Exception as e:
+            logger.warning(f"get_current_chat_provider_id({umo}) 失败: {e}")
+            return None
+        if prov is None:
+            return None
+        return prov.meta().id
 
     async def send_message(self, session, message_chain) -> bool:
         """根据 session(unified_msg_origin) 主动发送消息。"""

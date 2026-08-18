@@ -313,6 +313,48 @@ def error_response(
     )
 
 
+def file_response(
+    path: str | Path,
+    *,
+    filename: str | None = None,
+    content_type: str | None = None,
+    headers: dict[str, str] | None = None,
+) -> PluginWebResponse:
+    """构建文件下载响应（对齐原版 astrbot.api.web.file_response 签名）。
+
+    读取文件内容并以 bytes 形式放入 PluginWebResponse；filename 非空时
+    设置 Content-Disposition 响应头（attachment 下载），content_type
+    未指定时按文件扩展名推断媒体类型。
+
+    Args:
+        path: 要发送的文件路径
+        filename: 可选的下载文件名
+        content_type: 可选的响应媒体类型
+        headers: 可选的附加响应头
+
+    Returns:
+        携带文件内容的 PluginWebResponse
+    """
+    import mimetypes
+
+    path = Path(path)
+    body = path.read_bytes()
+
+    merged = dict(headers or {})
+    if content_type is not None:
+        merged.setdefault("Content-Type", content_type)
+    else:
+        # 按扩展名推断媒体类型（与 starlette FileResponse 行为一致）
+        guessed, _ = mimetypes.guess_type(str(path))
+        merged.setdefault("Content-Type", guessed or "application/octet-stream")
+    if filename:
+        merged.setdefault(
+            "Content-Disposition",
+            f"attachment; filename=\"{filename.replace('\"', '%22')}\"",
+        )
+    return PluginWebResponse(body, status_code=200, headers=merged)
+
+
 def stream_response(
     content: Any,
     *,

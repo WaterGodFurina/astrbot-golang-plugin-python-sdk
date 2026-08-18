@@ -2,7 +2,7 @@
 """旧风格兼容导出：from astrbot import *（对齐 Python astrbot.api.all.py）。"""
 # 用 api.logger（按调用方插件路由的 _PluginContextLogger），而非 astrbot 包
 # 顶层的裸 logging.getLogger——旧式插件才能享受 per-plugin 日志级别。
-from astrbot.api import logger
+from astrbot.api import html_renderer, logger
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.message.message_event_result import (
     CommandResult,
@@ -31,6 +31,8 @@ from astrbot.core.star.filter.platform_adapter_type import (
     PlatformAdapterTypeFilter,
 )
 from astrbot.core.star.config import *  # noqa
+from astrbot.core.db.po import Personality
+from astrbot.core.provider import Provider, ProviderMetaData
 from astrbot.core.provider.entities import LLMResponse, ProviderRequest
 from astrbot.core.platform import (
     AstrBotMessage,
@@ -39,5 +41,6 @@ from astrbot.core.platform import (
     MessageType,
     PlatformMetadata,
 )
+from astrbot.core.platform.register import register_platform_adapter
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.api.message_components import *  # noqa

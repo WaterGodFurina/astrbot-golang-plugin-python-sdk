@@ -108,6 +108,41 @@ class Provider:
             logger.warning(f"get_models({self.meta_id}) 失败: {e}")
             return []
 
+    async def text_chat_stream(self, **kwargs) -> Any:
+        """流式 LLM 调用（降级实现）。
+
+        Go 宿主桥无流式 RPC：经 chat_llm_async 拿完整文本后，yield 一个
+        LLMResponse（对齐本体流式响应对象字段，最后一条为完整结果）。
+        插件 `async for resp in provider.text_chat_stream(...)` 至少能拿到完整回复。
+
+        Args:
+            prompt: 提示词
+            system_prompt: 系统提示词
+            image_urls: 图片 URL 列表
+            session_id: 会话 ID
+        """
+        from astrbot.core.provider.entities import LLMResponse
+
+        prompt = kwargs.get("prompt") or ""
+        system_prompt = kwargs.get("system_prompt") or ""
+        image_urls = kwargs.get("image_urls") or []
+        session_id = kwargs.get("session_id") or ""
+        # contexts 传入时宿主无对应通道，取最后一条文本兜底为 prompt
+        if not prompt:
+            contexts = kwargs.get("contexts") or []
+            if contexts and isinstance(contexts[-1], dict) and contexts[-1].get("content"):
+                prompt = str(contexts[-1]["content"])
+        bridge = self._bridge()
+        if bridge is None:
+            raise RuntimeError("宿主桥未就绪（text_chat_stream 不可用）")
+        text = await bridge.chat_llm_async(
+            prompt,
+            system_prompt,
+            image_urls,
+            session_id,
+        )
+        yield LLMResponse(role="assistant", completion_text=text)
+
     async def test(self) -> bool:
         """可达性测试。Go 宿主无 Provider 直连通道，直接视为可用。"""
         return True
