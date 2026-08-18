@@ -77,6 +77,10 @@ logger = _PluginContextLogger()
 
 html_renderer = None  # Go 宿主无 HTML 渲染
 
+# sp：SharedPreferences 共享偏好存储（跨插件共享，作用域化），对齐 Python 本体
+# astrbot.api.sp。数据持久化在宿主数据目录 shared_preferences.json。
+from astrbot.core.utils.shared_preferences import sp  # noqa: E402
+
 __all__ = [
     "AstrBotConfig",
     "FuncTool",
@@ -87,4 +91,5 @@ __all__ = [
     "html_renderer",
     "llm_tool",
     "logger",
+    "sp",
 ]
