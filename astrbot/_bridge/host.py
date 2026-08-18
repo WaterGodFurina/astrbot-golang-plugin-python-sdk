@@ -603,6 +603,56 @@ class HostBridge:
         except Exception:
             return False
 
+    # ── 会话等待（SessionWaiter 跨进程喂入）────────────────────────────────
+    def register_session_wait(self, umo: str, timeout_seconds: int = 30) -> str:
+        """向宿主注册"等待 umo 的下一条消息"，返回宿主分配的 wait_id。
+
+        宿主收到该 umo 的消息时经 PluginService.FeedSessionWait 推送事件。
+        失败（宿主不支持 / 桥未就绪 / RPC 错误）返回 ""，由调用方降级为
+        纯本地等待。
+        """
+        if not self.ensure_connected():
+            return ""
+        try:
+            resp = self._stub.RegisterSessionWait(
+                plugin_pb2.RegisterSessionWaitRequest(
+                    umo=umo,
+                    timeout_seconds=int(timeout_seconds),
+                ),
+                timeout=30,
+            )
+            return resp.wait_id
+        except Exception as e:
+            logger.debug(f"RegisterSessionWait 失败: {e}")
+            return ""
+
+    def unregister_session_wait(self, wait_id: str) -> None:
+        """向宿主注销等待（会话正常/异常/超时结束时调用）。
+
+        幂等：宿主侧已因超时自动注销时，注销不存在的 wait_id 应静默。
+        """
+        if not wait_id:
+            return
+        if not self.ensure_connected():
+            return
+        try:
+            self._stub.UnregisterSessionWait(
+                plugin_pb2.UnregisterSessionWaitRequest(wait_id=wait_id),
+                timeout=30,
+            )
+        except Exception as e:
+            logger.debug(f"UnregisterSessionWait({wait_id}) 失败: {e}")
+
+    async def register_session_wait_async(
+        self, umo: str, timeout_seconds: int = 30
+    ) -> str:
+        """真异步 register_session_wait（asyncio.to_thread 包装）。"""
+        return await asyncio.to_thread(self.register_session_wait, umo, timeout_seconds)
+
+    async def unregister_session_wait_async(self, wait_id: str) -> None:
+        """真异步 unregister_session_wait（asyncio.to_thread 包装）。"""
+        await asyncio.to_thread(self.unregister_session_wait, wait_id)
+
     # ── 会话管理 async ──────────────────────────────────────────────────────
     async def get_curr_conversation_id_async(self, umo: str) -> str:
         return await asyncio.to_thread(self.get_curr_conversation_id, umo)

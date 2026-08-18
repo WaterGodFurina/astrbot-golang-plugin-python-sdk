@@ -88,6 +88,11 @@ class PluginServiceStub:
                 request_serializer=plugin__pb2.SetLogLevelRequest.SerializeToString,
                 response_deserializer=plugin__pb2.Empty.FromString,
                 _registered_method=True)
+        self.FeedSessionWait = channel.unary_unary(
+                '/astrbot.sdk.v1.PluginService/FeedSessionWait',
+                request_serializer=plugin__pb2.FeedSessionWaitRequest.SerializeToString,
+                response_deserializer=plugin__pb2.FeedSessionWaitResponse.FromString,
+                _registered_method=True)
         self.Cleanup = channel.unary_unary(
                 '/astrbot.sdk.v1.PluginService/Cleanup',
                 request_serializer=plugin__pb2.Empty.SerializeToString,
@@ -181,6 +186,16 @@ class PluginServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def FeedSessionWait(self, request, context):
+        """FeedSessionWait pushes an inbound message event to a plugin that
+        registered a session wait (session_waiter). Triggered by the host when
+        a message arrives for a waiting umo. The plugin feeds it into
+        SessionWaiter.trigger; if no wait matches it returns handled=false.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def Cleanup(self, request, context):
         """Cleanup is called when the host unloads the plugin.
         """
@@ -240,6 +255,11 @@ def add_PluginServiceServicer_to_server(servicer, server):
                     servicer.SetLogLevel,
                     request_deserializer=plugin__pb2.SetLogLevelRequest.FromString,
                     response_serializer=plugin__pb2.Empty.SerializeToString,
+            ),
+            'FeedSessionWait': grpc.unary_unary_rpc_method_handler(
+                    servicer.FeedSessionWait,
+                    request_deserializer=plugin__pb2.FeedSessionWaitRequest.FromString,
+                    response_serializer=plugin__pb2.FeedSessionWaitResponse.SerializeToString,
             ),
             'Cleanup': grpc.unary_unary_rpc_method_handler(
                     servicer.Cleanup,
@@ -532,6 +552,33 @@ class PluginService:
             _registered_method=True)
 
     @staticmethod
+    def FeedSessionWait(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.PluginService/FeedSessionWait',
+            plugin__pb2.FeedSessionWaitRequest.SerializeToString,
+            plugin__pb2.FeedSessionWaitResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def Cleanup(request,
             target,
             options=(),
@@ -712,6 +759,16 @@ class HostServiceStub:
         self.UninstallPlugin = channel.unary_unary(
                 '/astrbot.sdk.v1.HostService/UninstallPlugin',
                 request_serializer=plugin__pb2.UninstallPluginRequest.SerializeToString,
+                response_deserializer=plugin__pb2.Empty.FromString,
+                _registered_method=True)
+        self.RegisterSessionWait = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/RegisterSessionWait',
+                request_serializer=plugin__pb2.RegisterSessionWaitRequest.SerializeToString,
+                response_deserializer=plugin__pb2.RegisterSessionWaitResponse.FromString,
+                _registered_method=True)
+        self.UnregisterSessionWait = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/UnregisterSessionWait',
+                request_serializer=plugin__pb2.UnregisterSessionWaitRequest.SerializeToString,
                 response_deserializer=plugin__pb2.Empty.FromString,
                 _registered_method=True)
 
@@ -922,7 +979,23 @@ class HostServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def UninstallPlugin(self, request, context):
-        """卸载插件。
+        """UninstallPlugin 卸载插件。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RegisterSessionWait(self, request, context):
+        """── 会话等待（SessionWaiter 跨进程喂入）──
+        插件注册"等待某 umo 的下一条消息"（session_waiter.register_wait）。
+        宿主收到该 umo 的消息时经 PluginService.FeedSessionWait 推送事件。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def UnregisterSessionWait(self, request, context):
+        """插件注销等待（会话结束/超时）。
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1074,6 +1147,16 @@ def add_HostServiceServicer_to_server(servicer, server):
             'UninstallPlugin': grpc.unary_unary_rpc_method_handler(
                     servicer.UninstallPlugin,
                     request_deserializer=plugin__pb2.UninstallPluginRequest.FromString,
+                    response_serializer=plugin__pb2.Empty.SerializeToString,
+            ),
+            'RegisterSessionWait': grpc.unary_unary_rpc_method_handler(
+                    servicer.RegisterSessionWait,
+                    request_deserializer=plugin__pb2.RegisterSessionWaitRequest.FromString,
+                    response_serializer=plugin__pb2.RegisterSessionWaitResponse.SerializeToString,
+            ),
+            'UnregisterSessionWait': grpc.unary_unary_rpc_method_handler(
+                    servicer.UnregisterSessionWait,
+                    request_deserializer=plugin__pb2.UnregisterSessionWaitRequest.FromString,
                     response_serializer=plugin__pb2.Empty.SerializeToString,
             ),
     }
@@ -1860,6 +1943,60 @@ class HostService:
             target,
             '/astrbot.sdk.v1.HostService/UninstallPlugin',
             plugin__pb2.UninstallPluginRequest.SerializeToString,
+            plugin__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RegisterSessionWait(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/RegisterSessionWait',
+            plugin__pb2.RegisterSessionWaitRequest.SerializeToString,
+            plugin__pb2.RegisterSessionWaitResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UnregisterSessionWait(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/UnregisterSessionWait',
+            plugin__pb2.UnregisterSessionWaitRequest.SerializeToString,
             plugin__pb2.Empty.FromString,
             options,
             channel_credentials,

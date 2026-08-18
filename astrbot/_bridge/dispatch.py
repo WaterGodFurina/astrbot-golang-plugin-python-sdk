@@ -426,6 +426,27 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                 return resp
         return plugin_pb2.HandleFilterResponse(allow=True)
 
+    def FeedSessionWait(self, request, context) -> plugin_pb2.FeedSessionWaitResponse:
+        """宿主推送“插件注册了等待的 umo 的入站消息”（session_waiter 跨进程
+        喂入）。反序列化事件后经 try_trigger 匹配 USER_SESSIONS 中的等待会话
+        并触发其 handler；无匹配返回 handled=False。"""
+        event_data = json.loads(request.event_json) if request.event_json else {}
+        if not event_data:
+            return plugin_pb2.FeedSessionWaitResponse(handled=False)
+        try:
+            event = AstrMessageEvent.from_event_json(event_data)
+            # try_trigger 是 async 且触碰常驻 loop 上的异步状态（waiter 的
+            # future/_lock），必须在常驻 loop 上执行：与 _call 一致走
+            # loop.run_coro（run_coroutine_threadsafe），而非 asyncio.run——
+            # gRPC handler 线程上直接 asyncio.run 会与常驻 loop 并发竞争。
+            from astrbot.core.utils.session_waiter import try_trigger
+
+            handled = bool(loop.run_coro(try_trigger(event), timeout=30.0))
+            return plugin_pb2.FeedSessionWaitResponse(handled=handled)
+        except Exception as e:
+            logger.error(f"FeedSessionWait 分发失败: {e}")
+            return plugin_pb2.FeedSessionWaitResponse(handled=False)
+
     def HandleHook(self, request, context) -> plugin_pb2.HookResponse:
         self._wait_instanced()
         resp = plugin_pb2.HookResponse(handled=False)
