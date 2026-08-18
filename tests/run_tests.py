@@ -71,7 +71,7 @@ class TestSerialize(unittest.TestCase):
         self.assertEqual(ev.get_group_id(), "g1")
         self.assertTrue(ev.is_admin())
         self.assertEqual(ev.get_platform_name(), "qq_official")
-        self.assertEqual(ev.session.message_type.value, "GROUP")
+        self.assertEqual(ev.session.message_type.value, "GroupMessage")
 
     def test_result_to_json(self):
         from astrbot._bridge.serialize import result_to_json

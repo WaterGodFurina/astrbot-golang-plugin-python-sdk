@@ -262,6 +262,442 @@ class HostBridge:
         session = event.session
         return await asyncio.to_thread(self.react, session.platform_id, session.session_id, msg_id, emoji)
 
+    # ── 会话管理 ────────────────────────────────────────────────────────────
+    def get_curr_conversation_id(self, umo: str) -> str:
+        if not self.ensure_connected():
+            return ""
+        try:
+            resp = self._stub.GetCurrConversationID(
+                plugin_pb2.ConversationIDRequest(unified_msg_origin=umo),
+                timeout=30,
+            )
+            return resp.cid
+        except Exception:
+            return ""
+
+    def new_conversation(self, umo: str, platform_id: str = "", persona_id: str = "") -> str:
+        if not self.ensure_connected():
+            return ""
+        try:
+            resp = self._stub.NewConversation(
+                plugin_pb2.NewConversationRequest(
+                    unified_msg_origin=umo,
+                    platform_id=platform_id,
+                    persona_id=persona_id,
+                ),
+                timeout=30,
+            )
+            return resp.cid
+        except Exception:
+            return ""
+
+    def get_conversation(
+        self, umo: str, conversation_id: str = "", create_if_not_exists: bool = False
+    ) -> dict | None:
+        if not self.ensure_connected():
+            return None
+        try:
+            resp = self._stub.GetConversation(
+                plugin_pb2.GetConversationRequest(
+                    unified_msg_origin=umo,
+                    conversation_id=conversation_id,
+                    create_if_not_exists=create_if_not_exists,
+                ),
+                timeout=30,
+            )
+            if not resp.conversation_json:
+                return None
+            data = json.loads(resp.conversation_json)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
+    def get_conversations(self, umo: str = "") -> list[dict]:
+        if not self.ensure_connected():
+            return []
+        try:
+            resp = self._stub.GetConversations(
+                plugin_pb2.GetConversationsRequest(unified_msg_origin=umo),
+                timeout=30,
+            )
+            out: list[dict] = []
+            for raw in resp.conversations_json:
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    out.append(data)
+            return out
+        except Exception:
+            return []
+
+    def delete_conversation(self, umo: str, conversation_id: str = "") -> bool:
+        if not self.ensure_connected():
+            return False
+        try:
+            self._stub.DeleteConversation(
+                plugin_pb2.DeleteConversationRequest(
+                    unified_msg_origin=umo,
+                    conversation_id=conversation_id,
+                ),
+                timeout=30,
+            )
+            return True
+        except Exception:
+            return False
+
+    def switch_conversation(self, umo: str, conversation_id: str) -> bool:
+        if not self.ensure_connected():
+            return False
+        try:
+            self._stub.SwitchConversation(
+                plugin_pb2.SwitchConversationRequest(
+                    unified_msg_origin=umo,
+                    conversation_id=conversation_id,
+                ),
+                timeout=30,
+            )
+            return True
+        except Exception:
+            return False
+
+    def update_conversation_title(self, umo: str, title: str, conversation_id: str = "") -> bool:
+        if not self.ensure_connected():
+            return False
+        try:
+            self._stub.UpdateConversationTitle(
+                plugin_pb2.UpdateConversationTitleRequest(
+                    unified_msg_origin=umo,
+                    conversation_id=conversation_id,
+                    title=title,
+                ),
+                timeout=30,
+            )
+            return True
+        except Exception:
+            return False
+
+    def update_conversation_persona_id(
+        self, umo: str, persona_id: str, conversation_id: str = ""
+    ) -> bool:
+        if not self.ensure_connected():
+            return False
+        try:
+            self._stub.UpdateConversationPersonaID(
+                plugin_pb2.UpdateConversationPersonaRequest(
+                    unified_msg_origin=umo,
+                    conversation_id=conversation_id,
+                    persona_id=persona_id,
+                ),
+                timeout=30,
+            )
+            return True
+        except Exception:
+            return False
+
+    # ── 人格管理 ────────────────────────────────────────────────────────────
+    def get_personas(self) -> list[dict]:
+        if not self.ensure_connected():
+            return []
+        try:
+            resp = self._stub.GetPersonas(plugin_pb2.Empty(), timeout=30)
+            out: list[dict] = []
+            for raw in resp.personas_json:
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    out.append(data)
+            return out
+        except Exception:
+            return []
+
+    def get_default_persona(self, umo: str = "") -> dict | None:
+        if not self.ensure_connected():
+            return None
+        try:
+            resp = self._stub.GetDefaultPersona(
+                plugin_pb2.GetDefaultPersonaRequest(umo=umo),
+                timeout=30,
+            )
+            if not resp.persona_json:
+                return None
+            data = json.loads(resp.persona_json)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
+    def get_persona_tree(self) -> tuple[list[dict], list[dict]]:
+        """返回 (folders, personas)：文件夹树（嵌套结构）+ 全部人格。"""
+        if not self.ensure_connected():
+            return [], []
+        try:
+            resp = self._stub.GetPersonaTree(plugin_pb2.Empty(), timeout=30)
+            folders: list[dict] = []
+            personas: list[dict] = []
+            for raw in resp.folders_json:
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    folders.append(data)
+            for raw in resp.personas_json:
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    personas.append(data)
+            return folders, personas
+        except Exception:
+            return [], []
+
+    def resolve_selected_persona(
+        self,
+        umo: str,
+        conversation_persona_id: str = "",
+        platform_name: str = "",
+        provider_settings: dict | None = None,
+    ) -> dict:
+        """解析当前生效人格，返回含 persona_id/persona_name/persona_prompt/
+        force_applied_persona_id/is_default 的 dict。"""
+        if not self.ensure_connected():
+            return {}
+        try:
+            resp = self._stub.ResolveSelectedPersona(
+                plugin_pb2.ResolvePersonaRequest(
+                    umo=umo,
+                    conversation_persona_id=conversation_persona_id,
+                    platform_name=platform_name,
+                    provider_settings_json=json.dumps(provider_settings or {}).encode(),
+                ),
+                timeout=30,
+            )
+            return {
+                "persona_id": resp.persona_id,
+                "persona_name": resp.persona_name,
+                "persona_prompt": resp.persona_prompt,
+                "force_applied_persona_id": resp.force_applied_persona_id,
+                "is_default": resp.is_default,
+            }
+        except Exception:
+            return {}
+
+    # ── Provider 管理 ───────────────────────────────────────────────────────
+    def list_providers(self, capability: str = "") -> list[dict]:
+        if not self.ensure_connected():
+            return []
+        try:
+            resp = self._stub.ListProviders(
+                plugin_pb2.ListProvidersRequest(capability=capability),
+                timeout=30,
+            )
+            out: list[dict] = []
+            for raw in resp.providers_json:
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    out.append(data)
+            return out
+        except Exception:
+            return []
+
+    def get_using_provider(self, umo: str = "", capability: str = "chat_completion") -> dict | None:
+        if not self.ensure_connected():
+            return None
+        try:
+            resp = self._stub.GetUsingProvider(
+                plugin_pb2.GetUsingProviderRequest(umo=umo, capability=capability),
+                timeout=30,
+            )
+            if not resp.provider_json:
+                return None
+            data = json.loads(resp.provider_json)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
+    def set_provider(
+        self, umo: str = "", provider_id: str = "", capability: str = "chat_completion"
+    ) -> bool:
+        if not self.ensure_connected():
+            return False
+        try:
+            self._stub.SetProvider(
+                plugin_pb2.SetProviderRequest(
+                    umo=umo,
+                    provider_id=provider_id,
+                    capability=capability,
+                ),
+                timeout=30,
+            )
+            return True
+        except Exception:
+            return False
+
+    def get_provider_models(self, provider_id: str) -> list[str]:
+        if not self.ensure_connected():
+            return []
+        try:
+            resp = self._stub.GetProviderModels(
+                plugin_pb2.GetProviderModelsRequest(provider_id=provider_id),
+                timeout=30,
+            )
+            return list(resp.models)
+        except Exception:
+            return []
+
+    # ── 插件/Star 管理 ──────────────────────────────────────────────────────
+    def list_stars(self) -> list[dict]:
+        if not self.ensure_connected():
+            return []
+        try:
+            resp = self._stub.ListStars(plugin_pb2.Empty(), timeout=30)
+            out: list[dict] = []
+            for raw in resp.stars_json:
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    out.append(data)
+            return out
+        except Exception:
+            return []
+
+    def get_star(self, name: str) -> dict | None:
+        if not self.ensure_connected():
+            return None
+        try:
+            resp = self._stub.GetStar(
+                plugin_pb2.GetStarRequest(name=name),
+                timeout=30,
+            )
+            if not resp.star_json:
+                return None
+            data = json.loads(resp.star_json)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
+    def set_plugin_enabled(self, plugin_name: str, enabled: bool) -> bool:
+        if not self.ensure_connected():
+            return False
+        try:
+            self._stub.SetPluginEnabled(
+                plugin_pb2.SetPluginEnabledRequest(plugin_name=plugin_name, enabled=enabled),
+                timeout=30,
+            )
+            return True
+        except Exception:
+            return False
+
+    def install_plugin(self, repo: str) -> bool:
+        if not self.ensure_connected():
+            return False
+        try:
+            self._stub.InstallPlugin(
+                plugin_pb2.InstallPluginRequest(repo=repo),
+                timeout=30,
+            )
+            return True
+        except Exception:
+            return False
+
+    def uninstall_plugin(self, plugin_name: str) -> bool:
+        if not self.ensure_connected():
+            return False
+        try:
+            self._stub.UninstallPlugin(
+                plugin_pb2.UninstallPluginRequest(plugin_name=plugin_name),
+                timeout=30,
+            )
+            return True
+        except Exception:
+            return False
+
+    # ── 会话管理 async ──────────────────────────────────────────────────────
+    async def get_curr_conversation_id_async(self, umo: str) -> str:
+        return await asyncio.to_thread(self.get_curr_conversation_id, umo)
+
+    async def new_conversation_async(
+        self, umo: str, platform_id: str = "", persona_id: str = ""
+    ) -> str:
+        return await asyncio.to_thread(self.new_conversation, umo, platform_id, persona_id)
+
+    async def get_conversation_async(
+        self, umo: str, conversation_id: str = "", create_if_not_exists: bool = False
+    ) -> dict | None:
+        return await asyncio.to_thread(
+            self.get_conversation, umo, conversation_id, create_if_not_exists
+        )
+
+    async def get_conversations_async(self, umo: str = "") -> list[dict]:
+        return await asyncio.to_thread(self.get_conversations, umo)
+
+    async def delete_conversation_async(self, umo: str, conversation_id: str = "") -> bool:
+        return await asyncio.to_thread(self.delete_conversation, umo, conversation_id)
+
+    async def switch_conversation_async(self, umo: str, conversation_id: str) -> bool:
+        return await asyncio.to_thread(self.switch_conversation, umo, conversation_id)
+
+    async def update_conversation_title_async(
+        self, umo: str, title: str, conversation_id: str = ""
+    ) -> bool:
+        return await asyncio.to_thread(self.update_conversation_title, umo, title, conversation_id)
+
+    async def update_conversation_persona_id_async(
+        self, umo: str, persona_id: str, conversation_id: str = ""
+    ) -> bool:
+        return await asyncio.to_thread(
+            self.update_conversation_persona_id, umo, persona_id, conversation_id
+        )
+
+    # ── 人格管理 async ──────────────────────────────────────────────────────
+    async def get_personas_async(self) -> list[dict]:
+        return await asyncio.to_thread(self.get_personas)
+
+    async def get_default_persona_async(self, umo: str = "") -> dict | None:
+        return await asyncio.to_thread(self.get_default_persona, umo)
+
+    async def get_persona_tree_async(self) -> tuple[list[dict], list[dict]]:
+        return await asyncio.to_thread(self.get_persona_tree)
+
+    async def resolve_selected_persona_async(
+        self,
+        umo: str,
+        conversation_persona_id: str = "",
+        platform_name: str = "",
+        provider_settings: dict | None = None,
+    ) -> dict:
+        return await asyncio.to_thread(
+            self.resolve_selected_persona,
+            umo,
+            conversation_persona_id,
+            platform_name,
+            provider_settings,
+        )
+
+    # ── Provider 管理 async ─────────────────────────────────────────────────
+    async def list_providers_async(self, capability: str = "") -> list[dict]:
+        return await asyncio.to_thread(self.list_providers, capability)
+
+    async def get_using_provider_async(
+        self, umo: str = "", capability: str = "chat_completion"
+    ) -> dict | None:
+        return await asyncio.to_thread(self.get_using_provider, umo, capability)
+
+    async def set_provider_async(
+        self, umo: str = "", provider_id: str = "", capability: str = "chat_completion"
+    ) -> bool:
+        return await asyncio.to_thread(self.set_provider, umo, provider_id, capability)
+
+    async def get_provider_models_async(self, provider_id: str) -> list[str]:
+        return await asyncio.to_thread(self.get_provider_models, provider_id)
+
+    # ── 插件/Star 管理 async ────────────────────────────────────────────────
+    async def list_stars_async(self) -> list[dict]:
+        return await asyncio.to_thread(self.list_stars)
+
+    async def get_star_async(self, name: str) -> dict | None:
+        return await asyncio.to_thread(self.get_star, name)
+
+    async def set_plugin_enabled_async(self, plugin_name: str, enabled: bool) -> bool:
+        return await asyncio.to_thread(self.set_plugin_enabled, plugin_name, enabled)
+
+    async def install_plugin_async(self, repo: str) -> bool:
+        return await asyncio.to_thread(self.install_plugin, repo)
+
+    async def uninstall_plugin_async(self, plugin_name: str) -> bool:
+        return await asyncio.to_thread(self.uninstall_plugin, plugin_name)
+
 
 _bridge: HostBridge | None = None
 

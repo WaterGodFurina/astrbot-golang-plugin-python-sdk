@@ -24,19 +24,6 @@ def get_host_bridge():
     return _host_bridge
 
 
-class _PlaceholderProviderManager:
-    """占位 provider 管理器：插件可能读取 provider_manager.personas /
-    persona_configs（Python 本体常驻），Go 宿主暂不提供人格列表，返回空。"""
-
-    @property
-    def personas(self) -> list:
-        return []
-
-    @property
-    def persona_configs(self) -> list:
-        return []
-
-
 class Context:
     """插件上下文：宿主能力代理。"""
 
@@ -45,9 +32,19 @@ class Context:
         self._config_loaded: bool = False
         self.plugin_name: str = ""
         self.plugin_id: str = ""
-        # provider_manager 占位：插件可能读取 personas 等属性（对齐 Python 本体）
-        self.provider_manager: Any = _PlaceholderProviderManager()
-        self.persona_mgr: Any = _PlaceholderProviderManager()
+        # 管理器（对齐 Python 本体 Context：provider_manager / persona_manager
+        # / conversation_manager / persona_mgr（别名）/ _star_manager）
+        from astrbot.core.conversation_mgr import ConversationManager
+        from astrbot.core.persona_mgr import PersonaManager
+        from astrbot.core.provider.manager import ProviderManager
+        from astrbot.core.star.star_manager import PluginManager
+
+        self.provider_manager = ProviderManager(self._bridge)
+        self.persona_manager = PersonaManager(self._bridge)
+        # persona_mgr 保留为 persona_manager 别名（插件两种写法都兼容）
+        self.persona_mgr = self.persona_manager
+        self.conversation_manager = ConversationManager(self._bridge)
+        self._star_manager = PluginManager(context=self, bridge=self._bridge)
         # register_task 跟踪的任务（terminate 时取消）
         self._tasks: list[Any] = []
         # register_web_api 注册的 Web API：[(route, handler, methods, desc)]
@@ -74,6 +71,110 @@ class Context:
         except Exception as e:
             logger.warning(f"get_config() 拉取配置失败: {e}")
         return AstrBotConfig()
+
+    # ── 插件（Star）管理 ───────────────────────────────────────────────────
+    def get_all_stars(self) -> list:
+        """获取当前宿主载入的所有插件元数据列表（同步）。
+
+        插件侧同步遍历（for plugin in self.context.get_all_stars()），
+        返回 StarInfo 对象（属性访问 plugin.name/plugin.author/...）。
+        """
+        from astrbot.core.star.star_manager import StarInfo
+
+        try:
+            raw = self._bridge().list_stars()
+        except Exception as e:
+            logger.warning(f"get_all_stars 失败: {e}")
+            return []
+        return [StarInfo(item) for item in raw if isinstance(item, dict)]
+
+    def get_registered_star(self, star_name: str):
+        """根据插件名获取插件元数据（同步；未找到返回 None）。"""
+        from astrbot.core.star.star_manager import StarInfo
+
+        try:
+            data = self._bridge().get_star(star_name)
+        except Exception as e:
+            logger.warning(f"get_registered_star({star_name}) 失败: {e}")
+            return None
+        if not isinstance(data, dict) or not data:
+            return None
+        return StarInfo(data)
+
+    # ── Provider 管理（同步接口：插件同步调用）──────────────────────────────
+    def get_provider_by_id(self, provider_id: str):
+        """通过 ID 获取对应的 Provider（同步；未找到返回 None）。"""
+        try:
+            return self.provider_manager._get_provider_by_id(provider_id)
+        except Exception as e:
+            logger.warning(f"get_provider_by_id({provider_id}) 失败: {e}")
+            return None
+
+    def get_all_providers(self) -> list:
+        """获取所有用于文本生成任务的 LLM Provider（Chat_Completion 类型）。"""
+        try:
+            return self.provider_manager.provider_insts
+        except Exception as e:
+            logger.warning(f"get_all_providers 失败: {e}")
+            return []
+
+    def get_all_tts_providers(self) -> list:
+        """获取所有用于 TTS 任务的 Provider。"""
+        try:
+            return self.provider_manager.tts_provider_insts
+        except Exception as e:
+            logger.warning(f"get_all_tts_providers 失败: {e}")
+            return []
+
+    def get_all_stt_providers(self) -> list:
+        """获取所有用于 STT 任务的 Provider。"""
+        try:
+            return self.provider_manager.stt_provider_insts
+        except Exception as e:
+            logger.warning(f"get_all_stt_providers 失败: {e}")
+            return []
+
+    def get_using_provider(self, umo: str | None = None):
+        """获取当前使用的 LLM Provider（同步；插件侧同步调用）。"""
+        return self.provider_manager.get_using_provider(
+            capability="chat_completion",
+            umo=umo,
+        )
+
+    def get_using_tts_provider(self, umo: str | None = None):
+        """获取当前使用的 TTS Provider（同步）。"""
+        return self.provider_manager.get_using_provider(
+            capability="text_to_speech",
+            umo=umo,
+        )
+
+    def get_using_stt_provider(self, umo: str | None = None):
+        """获取当前使用的 STT Provider（同步）。"""
+        return self.provider_manager.get_using_provider(
+            capability="speech_to_text",
+            umo=umo,
+        )
+
+    async def get_using_provider_async(self, umo: str | None = None):
+        """获取当前使用的 LLM Provider（异步版）。"""
+        return await self.provider_manager.get_using_provider_async(
+            capability="chat_completion",
+            umo=umo,
+        )
+
+    async def get_using_tts_provider_async(self, umo: str | None = None):
+        """获取当前使用的 TTS Provider（异步版）。"""
+        return await self.provider_manager.get_using_provider_async(
+            capability="text_to_speech",
+            umo=umo,
+        )
+
+    async def get_using_stt_provider_async(self, umo: str | None = None):
+        """获取当前使用的 STT Provider（异步版）。"""
+        return await self.provider_manager.get_using_provider_async(
+            capability="speech_to_text",
+            umo=umo,
+        )
 
     async def send_message(self, session, message_chain) -> bool:
         """根据 session(unified_msg_origin) 主动发送消息。"""

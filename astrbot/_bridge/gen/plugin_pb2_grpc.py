@@ -609,6 +609,111 @@ class HostServiceStub:
                 request_serializer=plugin__pb2.TextToImageRequest.SerializeToString,
                 response_deserializer=plugin__pb2.TextToImageResponse.FromString,
                 _registered_method=True)
+        self.GetCurrConversationID = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/GetCurrConversationID',
+                request_serializer=plugin__pb2.ConversationIDRequest.SerializeToString,
+                response_deserializer=plugin__pb2.ConversationIDResponse.FromString,
+                _registered_method=True)
+        self.NewConversation = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/NewConversation',
+                request_serializer=plugin__pb2.NewConversationRequest.SerializeToString,
+                response_deserializer=plugin__pb2.ConversationIDResponse.FromString,
+                _registered_method=True)
+        self.GetConversation = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/GetConversation',
+                request_serializer=plugin__pb2.GetConversationRequest.SerializeToString,
+                response_deserializer=plugin__pb2.ConversationResponse.FromString,
+                _registered_method=True)
+        self.GetConversations = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/GetConversations',
+                request_serializer=plugin__pb2.GetConversationsRequest.SerializeToString,
+                response_deserializer=plugin__pb2.ConversationsResponse.FromString,
+                _registered_method=True)
+        self.DeleteConversation = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/DeleteConversation',
+                request_serializer=plugin__pb2.DeleteConversationRequest.SerializeToString,
+                response_deserializer=plugin__pb2.Empty.FromString,
+                _registered_method=True)
+        self.SwitchConversation = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/SwitchConversation',
+                request_serializer=plugin__pb2.SwitchConversationRequest.SerializeToString,
+                response_deserializer=plugin__pb2.Empty.FromString,
+                _registered_method=True)
+        self.UpdateConversationTitle = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/UpdateConversationTitle',
+                request_serializer=plugin__pb2.UpdateConversationTitleRequest.SerializeToString,
+                response_deserializer=plugin__pb2.Empty.FromString,
+                _registered_method=True)
+        self.UpdateConversationPersonaID = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/UpdateConversationPersonaID',
+                request_serializer=plugin__pb2.UpdateConversationPersonaRequest.SerializeToString,
+                response_deserializer=plugin__pb2.Empty.FromString,
+                _registered_method=True)
+        self.GetPersonas = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/GetPersonas',
+                request_serializer=plugin__pb2.Empty.SerializeToString,
+                response_deserializer=plugin__pb2.PersonasResponse.FromString,
+                _registered_method=True)
+        self.GetDefaultPersona = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/GetDefaultPersona',
+                request_serializer=plugin__pb2.GetDefaultPersonaRequest.SerializeToString,
+                response_deserializer=plugin__pb2.PersonaResponse.FromString,
+                _registered_method=True)
+        self.GetPersonaTree = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/GetPersonaTree',
+                request_serializer=plugin__pb2.Empty.SerializeToString,
+                response_deserializer=plugin__pb2.PersonaTreeResponse.FromString,
+                _registered_method=True)
+        self.ResolveSelectedPersona = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/ResolveSelectedPersona',
+                request_serializer=plugin__pb2.ResolvePersonaRequest.SerializeToString,
+                response_deserializer=plugin__pb2.ResolvePersonaResponse.FromString,
+                _registered_method=True)
+        self.ListProviders = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/ListProviders',
+                request_serializer=plugin__pb2.ListProvidersRequest.SerializeToString,
+                response_deserializer=plugin__pb2.ProvidersResponse.FromString,
+                _registered_method=True)
+        self.GetUsingProvider = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/GetUsingProvider',
+                request_serializer=plugin__pb2.GetUsingProviderRequest.SerializeToString,
+                response_deserializer=plugin__pb2.ProviderResponse.FromString,
+                _registered_method=True)
+        self.SetProvider = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/SetProvider',
+                request_serializer=plugin__pb2.SetProviderRequest.SerializeToString,
+                response_deserializer=plugin__pb2.Empty.FromString,
+                _registered_method=True)
+        self.GetProviderModels = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/GetProviderModels',
+                request_serializer=plugin__pb2.GetProviderModelsRequest.SerializeToString,
+                response_deserializer=plugin__pb2.ProviderModelsResponse.FromString,
+                _registered_method=True)
+        self.ListStars = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/ListStars',
+                request_serializer=plugin__pb2.Empty.SerializeToString,
+                response_deserializer=plugin__pb2.StarsResponse.FromString,
+                _registered_method=True)
+        self.GetStar = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/GetStar',
+                request_serializer=plugin__pb2.GetStarRequest.SerializeToString,
+                response_deserializer=plugin__pb2.StarResponse.FromString,
+                _registered_method=True)
+        self.SetPluginEnabled = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/SetPluginEnabled',
+                request_serializer=plugin__pb2.SetPluginEnabledRequest.SerializeToString,
+                response_deserializer=plugin__pb2.Empty.FromString,
+                _registered_method=True)
+        self.InstallPlugin = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/InstallPlugin',
+                request_serializer=plugin__pb2.InstallPluginRequest.SerializeToString,
+                response_deserializer=plugin__pb2.Empty.FromString,
+                _registered_method=True)
+        self.UninstallPlugin = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/UninstallPlugin',
+                request_serializer=plugin__pb2.UninstallPluginRequest.SerializeToString,
+                response_deserializer=plugin__pb2.Empty.FromString,
+                _registered_method=True)
 
 
 class HostServiceServicer:
@@ -672,6 +777,157 @@ class HostServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetCurrConversationID(self, request, context):
+        """── 会话管理（对齐 Python AstrBot conversation_manager）──
+        取会话当前 ID（umo 无会话时返回空串）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def NewConversation(self, request, context):
+        """新建会话（设为当前）并返回其 ID。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetConversation(self, request, context):
+        """按 umo+cid 取会话（create_if_not_exists 时不存在则新建）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetConversations(self, request, context):
+        """列出某 umo 的全部会话（无 umo 时列出全部）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DeleteConversation(self, request, context):
+        """删除会话（按 umo+cid；cid 空时删除当前会话）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SwitchConversation(self, request, context):
+        """切换当前会话（设置 umo 的 current cid）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def UpdateConversationTitle(self, request, context):
+        """更新会话标题。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def UpdateConversationPersonaID(self, request, context):
+        """更新会话绑定的人格。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetPersonas(self, request, context):
+        """── 人格管理（对齐 Python AstrBot persona_manager）──
+        取全部人格。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetDefaultPersona(self, request, context):
+        """取默认人格（按 umo 解析默认人格 id/name）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetPersonaTree(self, request, context):
+        """取文件夹树（嵌套结构）+ 全部人格。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ResolveSelectedPersona(self, request, context):
+        """解析当前生效人格（会话/规则/默认的优先级合并）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListProviders(self, request, context):
+        """── Provider 管理（对齐 Python AstrBot provider_manager）──
+        列出全部 provider（按能力类型过滤，空=全部）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetUsingProvider(self, request, context):
+        """取某 umo 当前使用的 provider（按能力类型）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SetProvider(self, request, context):
+        """设置某 umo 的当前 provider。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetProviderModels(self, request, context):
+        """取 provider 的模型列表。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListStars(self, request, context):
+        """── 插件/Star 管理（对齐 Python AstrBot star_manager）──
+        列出全部已安装插件（Star 元数据）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetStar(self, request, context):
+        """按插件名取 Star 元数据。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SetPluginEnabled(self, request, context):
+        """启用/禁用插件。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def InstallPlugin(self, request, context):
+        """安装插件（git/url 源）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def UninstallPlugin(self, request, context):
+        """卸载插件。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_HostServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -714,6 +970,111 @@ def add_HostServiceServicer_to_server(servicer, server):
                     servicer.TextToImage,
                     request_deserializer=plugin__pb2.TextToImageRequest.FromString,
                     response_serializer=plugin__pb2.TextToImageResponse.SerializeToString,
+            ),
+            'GetCurrConversationID': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetCurrConversationID,
+                    request_deserializer=plugin__pb2.ConversationIDRequest.FromString,
+                    response_serializer=plugin__pb2.ConversationIDResponse.SerializeToString,
+            ),
+            'NewConversation': grpc.unary_unary_rpc_method_handler(
+                    servicer.NewConversation,
+                    request_deserializer=plugin__pb2.NewConversationRequest.FromString,
+                    response_serializer=plugin__pb2.ConversationIDResponse.SerializeToString,
+            ),
+            'GetConversation': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetConversation,
+                    request_deserializer=plugin__pb2.GetConversationRequest.FromString,
+                    response_serializer=plugin__pb2.ConversationResponse.SerializeToString,
+            ),
+            'GetConversations': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetConversations,
+                    request_deserializer=plugin__pb2.GetConversationsRequest.FromString,
+                    response_serializer=plugin__pb2.ConversationsResponse.SerializeToString,
+            ),
+            'DeleteConversation': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeleteConversation,
+                    request_deserializer=plugin__pb2.DeleteConversationRequest.FromString,
+                    response_serializer=plugin__pb2.Empty.SerializeToString,
+            ),
+            'SwitchConversation': grpc.unary_unary_rpc_method_handler(
+                    servicer.SwitchConversation,
+                    request_deserializer=plugin__pb2.SwitchConversationRequest.FromString,
+                    response_serializer=plugin__pb2.Empty.SerializeToString,
+            ),
+            'UpdateConversationTitle': grpc.unary_unary_rpc_method_handler(
+                    servicer.UpdateConversationTitle,
+                    request_deserializer=plugin__pb2.UpdateConversationTitleRequest.FromString,
+                    response_serializer=plugin__pb2.Empty.SerializeToString,
+            ),
+            'UpdateConversationPersonaID': grpc.unary_unary_rpc_method_handler(
+                    servicer.UpdateConversationPersonaID,
+                    request_deserializer=plugin__pb2.UpdateConversationPersonaRequest.FromString,
+                    response_serializer=plugin__pb2.Empty.SerializeToString,
+            ),
+            'GetPersonas': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetPersonas,
+                    request_deserializer=plugin__pb2.Empty.FromString,
+                    response_serializer=plugin__pb2.PersonasResponse.SerializeToString,
+            ),
+            'GetDefaultPersona': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetDefaultPersona,
+                    request_deserializer=plugin__pb2.GetDefaultPersonaRequest.FromString,
+                    response_serializer=plugin__pb2.PersonaResponse.SerializeToString,
+            ),
+            'GetPersonaTree': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetPersonaTree,
+                    request_deserializer=plugin__pb2.Empty.FromString,
+                    response_serializer=plugin__pb2.PersonaTreeResponse.SerializeToString,
+            ),
+            'ResolveSelectedPersona': grpc.unary_unary_rpc_method_handler(
+                    servicer.ResolveSelectedPersona,
+                    request_deserializer=plugin__pb2.ResolvePersonaRequest.FromString,
+                    response_serializer=plugin__pb2.ResolvePersonaResponse.SerializeToString,
+            ),
+            'ListProviders': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListProviders,
+                    request_deserializer=plugin__pb2.ListProvidersRequest.FromString,
+                    response_serializer=plugin__pb2.ProvidersResponse.SerializeToString,
+            ),
+            'GetUsingProvider': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetUsingProvider,
+                    request_deserializer=plugin__pb2.GetUsingProviderRequest.FromString,
+                    response_serializer=plugin__pb2.ProviderResponse.SerializeToString,
+            ),
+            'SetProvider': grpc.unary_unary_rpc_method_handler(
+                    servicer.SetProvider,
+                    request_deserializer=plugin__pb2.SetProviderRequest.FromString,
+                    response_serializer=plugin__pb2.Empty.SerializeToString,
+            ),
+            'GetProviderModels': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetProviderModels,
+                    request_deserializer=plugin__pb2.GetProviderModelsRequest.FromString,
+                    response_serializer=plugin__pb2.ProviderModelsResponse.SerializeToString,
+            ),
+            'ListStars': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListStars,
+                    request_deserializer=plugin__pb2.Empty.FromString,
+                    response_serializer=plugin__pb2.StarsResponse.SerializeToString,
+            ),
+            'GetStar': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetStar,
+                    request_deserializer=plugin__pb2.GetStarRequest.FromString,
+                    response_serializer=plugin__pb2.StarResponse.SerializeToString,
+            ),
+            'SetPluginEnabled': grpc.unary_unary_rpc_method_handler(
+                    servicer.SetPluginEnabled,
+                    request_deserializer=plugin__pb2.SetPluginEnabledRequest.FromString,
+                    response_serializer=plugin__pb2.Empty.SerializeToString,
+            ),
+            'InstallPlugin': grpc.unary_unary_rpc_method_handler(
+                    servicer.InstallPlugin,
+                    request_deserializer=plugin__pb2.InstallPluginRequest.FromString,
+                    response_serializer=plugin__pb2.Empty.SerializeToString,
+            ),
+            'UninstallPlugin': grpc.unary_unary_rpc_method_handler(
+                    servicer.UninstallPlugin,
+                    request_deserializer=plugin__pb2.UninstallPluginRequest.FromString,
+                    response_serializer=plugin__pb2.Empty.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -933,6 +1294,573 @@ class HostService:
             '/astrbot.sdk.v1.HostService/TextToImage',
             plugin__pb2.TextToImageRequest.SerializeToString,
             plugin__pb2.TextToImageResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetCurrConversationID(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/GetCurrConversationID',
+            plugin__pb2.ConversationIDRequest.SerializeToString,
+            plugin__pb2.ConversationIDResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def NewConversation(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/NewConversation',
+            plugin__pb2.NewConversationRequest.SerializeToString,
+            plugin__pb2.ConversationIDResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetConversation(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/GetConversation',
+            plugin__pb2.GetConversationRequest.SerializeToString,
+            plugin__pb2.ConversationResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetConversations(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/GetConversations',
+            plugin__pb2.GetConversationsRequest.SerializeToString,
+            plugin__pb2.ConversationsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeleteConversation(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/DeleteConversation',
+            plugin__pb2.DeleteConversationRequest.SerializeToString,
+            plugin__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SwitchConversation(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/SwitchConversation',
+            plugin__pb2.SwitchConversationRequest.SerializeToString,
+            plugin__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UpdateConversationTitle(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/UpdateConversationTitle',
+            plugin__pb2.UpdateConversationTitleRequest.SerializeToString,
+            plugin__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UpdateConversationPersonaID(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/UpdateConversationPersonaID',
+            plugin__pb2.UpdateConversationPersonaRequest.SerializeToString,
+            plugin__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetPersonas(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/GetPersonas',
+            plugin__pb2.Empty.SerializeToString,
+            plugin__pb2.PersonasResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetDefaultPersona(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/GetDefaultPersona',
+            plugin__pb2.GetDefaultPersonaRequest.SerializeToString,
+            plugin__pb2.PersonaResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetPersonaTree(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/GetPersonaTree',
+            plugin__pb2.Empty.SerializeToString,
+            plugin__pb2.PersonaTreeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ResolveSelectedPersona(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/ResolveSelectedPersona',
+            plugin__pb2.ResolvePersonaRequest.SerializeToString,
+            plugin__pb2.ResolvePersonaResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListProviders(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/ListProviders',
+            plugin__pb2.ListProvidersRequest.SerializeToString,
+            plugin__pb2.ProvidersResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetUsingProvider(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/GetUsingProvider',
+            plugin__pb2.GetUsingProviderRequest.SerializeToString,
+            plugin__pb2.ProviderResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SetProvider(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/SetProvider',
+            plugin__pb2.SetProviderRequest.SerializeToString,
+            plugin__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetProviderModels(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/GetProviderModels',
+            plugin__pb2.GetProviderModelsRequest.SerializeToString,
+            plugin__pb2.ProviderModelsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListStars(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/ListStars',
+            plugin__pb2.Empty.SerializeToString,
+            plugin__pb2.StarsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetStar(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/GetStar',
+            plugin__pb2.GetStarRequest.SerializeToString,
+            plugin__pb2.StarResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SetPluginEnabled(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/SetPluginEnabled',
+            plugin__pb2.SetPluginEnabledRequest.SerializeToString,
+            plugin__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def InstallPlugin(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/InstallPlugin',
+            plugin__pb2.InstallPluginRequest.SerializeToString,
+            plugin__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UninstallPlugin(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/UninstallPlugin',
+            plugin__pb2.UninstallPluginRequest.SerializeToString,
+            plugin__pb2.Empty.FromString,
             options,
             channel_credentials,
             insecure,
