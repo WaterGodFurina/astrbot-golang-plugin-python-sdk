@@ -34,7 +34,56 @@ class AstrBotConfig(dict):
     save_config_async（把当前配置写回宿主）。宿主桥引用以实例私有属性
     `_bridge` / `_plugin_name` 注入（Context.get_config 创建时绑定），
     无桥时回退到本地 JSON 文件写入。
+
+    schema 属性对齐本体存储插件配置的 JSON Schema（构造时从宿主
+    配置读入），插件可在运行时更新 options/labels（如 update_manager
+    的插件列表下拉），宿主配置对话框实时拉取。
     """
+
+    def __init__(self, *args, schema: dict | None = None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        # 关键的实例属性存入 __dict__，避免被当作配置项写回宿主。
+        object.__setattr__(self, "schema", schema)
+        if schema is not None:
+            defaults = self._config_schema_to_default_config(schema)
+            for k, v in defaults.items():
+                self.setdefault(k, v)
+
+    @staticmethod
+    def _config_schema_to_default_config(schema: dict) -> dict:
+        """将 Schema 转换成默认配置（对齐 Python 本体 astrbot_config）。"""
+        DEFAULT_VALUE_MAP = {
+            "string": "",
+            "float": 0.0,
+            "int": 0,
+            "bool": False,
+            "list": [],
+            "object": {},
+            "template_list": [],
+        }
+        conf: dict = {}
+
+        def _parse(schema: dict, conf: dict) -> None:
+            for k, v in schema.items():
+                if not isinstance(v, dict):
+                    continue
+                vtype = v.get("type", "string")
+                if "default" in v:
+                    default = v["default"]
+                else:
+                    default = DEFAULT_VALUE_MAP.get(vtype, "")
+                if vtype == "object":
+                    conf[k] = {}
+                    _parse(v.get("items") or {}, conf[k])
+                else:
+                    conf[k] = default
+
+        _parse(schema, conf)
+        return conf
+
+    def set_schema(self, schema: dict | None) -> None:
+        """更新运行时 schema（插件 __init__ 后宿主注入/刷新时调用）。"""
+        object.__setattr__(self, "schema", schema)
 
     def __getattr__(self, item):
         # 对齐 Python 本体：缺项返回 None 而非抛 AttributeError

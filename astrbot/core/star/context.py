@@ -236,7 +236,11 @@ class Context:
             bridge = self._bridge()
             data = bridge.get_config(self.plugin_name)
             if isinstance(data, dict):
-                self._config = AstrBotConfig(data)
+                # 宿主返回的配置 dict 可能附带 __schema__（插件配置 JSON
+                # Schema，宿主经 GetConfig hook 注入）。提取后传给
+                # AstrBotConfig 使插件 self.config.schema 可访问。
+                schema = data.pop("__schema__", None)
+                self._config = AstrBotConfig(data, schema=schema)
                 # 绑定宿主桥与插件名：config.save_config() 写回宿主需要
                 self._config._bridge = bridge
                 self._config._plugin_name = self.plugin_name

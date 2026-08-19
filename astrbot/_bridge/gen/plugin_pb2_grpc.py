@@ -93,6 +93,11 @@ class PluginServiceStub:
                 request_serializer=plugin__pb2.FeedSessionWaitRequest.SerializeToString,
                 response_deserializer=plugin__pb2.FeedSessionWaitResponse.FromString,
                 _registered_method=True)
+        self.GetConfigSchema = channel.unary_unary(
+                '/astrbot.sdk.v1.PluginService/GetConfigSchema',
+                request_serializer=plugin__pb2.Empty.SerializeToString,
+                response_deserializer=plugin__pb2.GetConfigSchemaResponse.FromString,
+                _registered_method=True)
         self.Cleanup = channel.unary_unary(
                 '/astrbot.sdk.v1.PluginService/Cleanup',
                 request_serializer=plugin__pb2.Empty.SerializeToString,
@@ -196,6 +201,16 @@ class PluginServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetConfigSchema(self, request, context):
+        """GetConfigSchema returns the plugin's CURRENT config schema (JSON), which
+        plugins may refresh at runtime (e.g. update_manager fills plugin-list
+        dropdown options in __init__). Aligns with Python AstrBot's WebUI reading
+        the live star instance config.schema.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def Cleanup(self, request, context):
         """Cleanup is called when the host unloads the plugin.
         """
@@ -260,6 +275,11 @@ def add_PluginServiceServicer_to_server(servicer, server):
                     servicer.FeedSessionWait,
                     request_deserializer=plugin__pb2.FeedSessionWaitRequest.FromString,
                     response_serializer=plugin__pb2.FeedSessionWaitResponse.SerializeToString,
+            ),
+            'GetConfigSchema': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetConfigSchema,
+                    request_deserializer=plugin__pb2.Empty.FromString,
+                    response_serializer=plugin__pb2.GetConfigSchemaResponse.SerializeToString,
             ),
             'Cleanup': grpc.unary_unary_rpc_method_handler(
                     servicer.Cleanup,
@@ -568,6 +588,33 @@ class PluginService:
             '/astrbot.sdk.v1.PluginService/FeedSessionWait',
             plugin__pb2.FeedSessionWaitRequest.SerializeToString,
             plugin__pb2.FeedSessionWaitResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetConfigSchema(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.PluginService/GetConfigSchema',
+            plugin__pb2.Empty.SerializeToString,
+            plugin__pb2.GetConfigSchemaResponse.FromString,
             options,
             channel_credentials,
             insecure,

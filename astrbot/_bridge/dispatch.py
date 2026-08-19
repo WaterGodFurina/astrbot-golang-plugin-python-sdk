@@ -447,6 +447,23 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
             logger.error(f"FeedSessionWait 分发失败: {e}")
             return plugin_pb2.FeedSessionWaitResponse(handled=False)
 
+    def GetConfigSchema(self, request, context) -> plugin_pb2.GetConfigSchemaResponse:
+        """宿主实时拉取插件当前配置 schema（对齐 Python AstrBot：WebUI 配置
+        对话框读取运行中 star 实例的 config.schema）。update_manager 等插件在
+        __init__ 动态填充插件列表选项（options/labels），这些值不在 Register
+        静态快照里，须实时返回。取不到时返回空 bytes，宿主回退 Register 快照。"""
+        try:
+            inst = self.inst
+            cfg = getattr(inst, "config", None)
+            schema = getattr(cfg, "schema", None)
+            if isinstance(schema, dict):
+                return plugin_pb2.GetConfigSchemaResponse(
+                    schema_json=json.dumps(schema).encode()
+                )
+        except Exception as e:
+            logger.warning(f"GetConfigSchema 获取失败: {e}")
+        return plugin_pb2.GetConfigSchemaResponse(schema_json=b"")
+
     def HandleHook(self, request, context) -> plugin_pb2.HookResponse:
         self._wait_instanced()
         resp = plugin_pb2.HookResponse(handled=False)

@@ -71,6 +71,11 @@ service PluginService {
   // a message arrives for a waiting umo. The plugin feeds it into
   // SessionWaiter.trigger; if no wait matches it returns handled=false.
   rpc FeedSessionWait(FeedSessionWaitRequest) returns (FeedSessionWaitResponse);
+  // GetConfigSchema returns the plugin's CURRENT config schema (JSON), which
+  // plugins may refresh at runtime (e.g. update_manager fills plugin-list
+  // dropdown options in __init__). Aligns with Python AstrBot's WebUI reading
+  // the live star instance config.schema.
+  rpc GetConfigSchema(Empty) returns (GetConfigSchemaResponse);
   // Cleanup is called when the host unloads the plugin.
   rpc Cleanup(Empty) returns (Empty);
 }
@@ -671,4 +676,10 @@ message FeedSessionWaitRequest {
 message FeedSessionWaitResponse {
   // Whether a registered wait consumed this event.
   bool handled = 1;
+}
+
+message GetConfigSchemaResponse {
+  // JSON schema (raw or FlatSchema format). Empty means host falls back to
+  // the Register snapshot.
+  bytes schema_json = 1;
 }
