@@ -460,6 +460,9 @@ class AstrMessageEvent(abc.ABC):
         from astrbot._bridge.serialize import component_from_json
 
         platform = data.get("platform", "")
+        # 三段式 unified_msg_origin 的第一段优先取平台实例 ID（platform_id，
+        # 宿主 sdk.Event 已补齐），缺失时回退平台类型名（platform）保持兼容。
+        platform_id = data.get("platform_id") or platform
         self_id = data.get("self_id", "")
         sender_id = data.get("sender_id", "")
         sender_name = data.get("sender_name", "")
@@ -474,7 +477,16 @@ class AstrMessageEvent(abc.ABC):
         timestamp = data.get("timestamp", 0)
         metadata = data.get("metadata") or {}
 
-        msg_type = MessageType.GROUP_MESSAGE if is_group else MessageType.FRIEND_MESSAGE
+        # 消息类型优先取宿主传的驼峰值（GroupMessage/FriendMessage/
+        # OtherMessage），为空时按 is_group 判定。
+        msg_type_str = data.get("message_type", "")
+        if msg_type_str:
+            try:
+                msg_type = MessageType(msg_type_str)
+            except ValueError:
+                msg_type = MessageType.GROUP_MESSAGE if is_group else MessageType.FRIEND_MESSAGE
+        else:
+            msg_type = MessageType.GROUP_MESSAGE if is_group else MessageType.FRIEND_MESSAGE
         chain = [component_from_json(c) for c in (data.get("chain") or [])]
 
         obj = AstrBotMessage()
@@ -493,13 +505,16 @@ class AstrMessageEvent(abc.ABC):
         meta = PlatformMetadata(
             name=platform,
             description="",
-            id=platform,
+            # id 作为 MessageSession 的 platform_id（三段式第一段），取实例
+            # ID（platform_id）；仅当 platform_id 缺失时回退平台类型名。
+            id=platform_id,
         )
         # 按平台还原对应的事件子类：aiocqhttp 插件（box 等）依赖
         # event.bot（CQHttp 实例，经 HostBridge.call_action 转发宿主）。
         # 若统一构造 AstrMessageEvent（无 bot 属性），插件的
         # event.bot.get_stranger_info(...) 会 AttributeError → 插件捕获
         # 后静默失败 → 命令落空走 LLM。
+        # 注意：此处仍用 platform（平台类型名）判断，不要改为 platform_id。
         if platform == "aiocqhttp":
             from aiocqhttp import CQHttp
             from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
