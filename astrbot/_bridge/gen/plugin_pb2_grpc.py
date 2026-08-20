@@ -703,6 +703,11 @@ class HostServiceStub:
                 request_serializer=plugin__pb2.TextToImageRequest.SerializeToString,
                 response_deserializer=plugin__pb2.TextToImageResponse.FromString,
                 _registered_method=True)
+        self.HtmlRender = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/HtmlRender',
+                request_serializer=plugin__pb2.HtmlRenderRequest.SerializeToString,
+                response_deserializer=plugin__pb2.HtmlRenderResponse.FromString,
+                _registered_method=True)
         self.GetCurrConversationID = channel.unary_unary(
                 '/astrbot.sdk.v1.HostService/GetCurrConversationID',
                 request_serializer=plugin__pb2.ConversationIDRequest.SerializeToString,
@@ -875,6 +880,15 @@ class HostServiceServicer:
 
     def TextToImage(self, request, context):
         """TextToImage renders text into an image (host t2i engine) and returns the
+        PNG bytes (base64). The plugin can then send it as an Image component.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def HtmlRender(self, request, context):
+        """HtmlRender renders an HTML/Jinja2 template with data into a PNG image
+        (host t2i engine first, fallback to headless Chromium) and returns the
         PNG bytes (base64). The plugin can then send it as an Image component.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -1090,6 +1104,11 @@ def add_HostServiceServicer_to_server(servicer, server):
                     servicer.TextToImage,
                     request_deserializer=plugin__pb2.TextToImageRequest.FromString,
                     response_serializer=plugin__pb2.TextToImageResponse.SerializeToString,
+            ),
+            'HtmlRender': grpc.unary_unary_rpc_method_handler(
+                    servicer.HtmlRender,
+                    request_deserializer=plugin__pb2.HtmlRenderRequest.FromString,
+                    response_serializer=plugin__pb2.HtmlRenderResponse.SerializeToString,
             ),
             'GetCurrConversationID': grpc.unary_unary_rpc_method_handler(
                     servicer.GetCurrConversationID,
@@ -1424,6 +1443,33 @@ class HostService:
             '/astrbot.sdk.v1.HostService/TextToImage',
             plugin__pb2.TextToImageRequest.SerializeToString,
             plugin__pb2.TextToImageResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def HtmlRender(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/HtmlRender',
+            plugin__pb2.HtmlRenderRequest.SerializeToString,
+            plugin__pb2.HtmlRenderResponse.FromString,
             options,
             channel_credentials,
             insecure,

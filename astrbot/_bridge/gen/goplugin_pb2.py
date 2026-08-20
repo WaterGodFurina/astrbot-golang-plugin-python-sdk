@@ -24,14 +24,14 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0egoplugin.proto\x12\x06plugin\"\x9b\x01\n\x08\x43onnInfo\x12\x12\n\nservice_id\x18\x01 \x01(\r\x12\x0f\n\x07network\x18\x02 \x01(\t\x12\x0f\n\x07\x61\x64\x64ress\x18\x03 \x01(\t\x12%\n\x05knock\x18\x04 \x01(\x0b\x32\x16.plugin.ConnInfo.Knock\x1a\x32\n\x05Knock\x12\r\n\x05knock\x18\x01 \x01(\x08\x12\x0b\n\x03\x61\x63k\x18\x02 \x01(\x08\x12\r\n\x05\x65rror\x18\x03 \x01(\t2C\n\nGRPCBroker\x12\x35\n\x0bStartStream\x12\x10.plugin.ConnInfo\x1a\x10.plugin.ConnInfo(\x01\x30\x01\x42\nZ\x08./pluginb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0egoplugin.proto\x12\x06plugin\"\x9b\x01\n\x08\x43onnInfo\x12\x12\n\nservice_id\x18\x01 \x01(\r\x12\x0f\n\x07network\x18\x02 \x01(\t\x12\x0f\n\x07\x61\x64\x64ress\x18\x03 \x01(\t\x12%\n\x05knock\x18\x04 \x01(\x0b\x32\x16.plugin.ConnInfo.Knock\x1a\x32\n\x05Knock\x12\r\n\x05knock\x18\x01 \x01(\x08\x12\x0b\n\x03\x61\x63k\x18\x02 \x01(\x08\x12\r\n\x05\x65rror\x18\x03 \x01(\t2C\n\nGRPCBroker\x12\x35\n\x0bStartStream\x12\x10.plugin.ConnInfo\x1a\x10.plugin.ConnInfo(\x01\x30\x01\x42;Z9github.com/WaterGodFurina/Astrbot-go-plugin-sdk/gen/sdkv1b\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'goplugin_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._loaded_options = None
-  _globals['DESCRIPTOR']._serialized_options = b'Z\010./plugin'
+  _globals['DESCRIPTOR']._serialized_options = b'Z9github.com/WaterGodFurina/Astrbot-go-plugin-sdk/gen/sdkv1'
   _globals['_CONNINFO']._serialized_start=27
   _globals['_CONNINFO']._serialized_end=182
   _globals['_CONNINFO_KNOCK']._serialized_start=132

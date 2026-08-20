@@ -1,6 +1,7 @@
 """Star 基类（Go 宿主兼容运行时）。"""
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -90,9 +91,35 @@ class Star(CommandParserMixin, PluginKVStoreMixin):
         return_url=True,
         options: dict | None = None,
     ) -> str:
-        raise NotImplementedError(
-            "html_render 在 Go 宿主兼容运行时中不可用（宿主无 HTML 模板渲染引擎）。"
-        )
+        """将 HTML/Jinja2 模板渲染为图片（宿主 t2i 优先 + 兜底渲染）。
+
+        返回图片的 base64（data:image/png;base64,...）或本地临时文件路径。
+        data/options 支持直接传入已序列化的 JSON 字符串。
+        """
+        from astrbot._bridge.host import get_bridge
+
+        if isinstance(data, str):
+            data_json = data
+        else:
+            data_json = json.dumps(data, ensure_ascii=False)
+        if isinstance(options, str):
+            options_json = options
+        else:
+            options_json = json.dumps(options or {}, ensure_ascii=False)
+
+        try:
+            png = get_bridge().html_render(tmpl, data_json, options_json)
+        except Exception as e:
+            logger.warning(f"html_render 失败: {e}")
+            raise
+        if not return_url:
+            import base64
+
+            return base64.b64encode(png).decode()
+        # 返回 data URL，插件可直接作为 Image 组件发送
+        import base64
+
+        return "data:image/png;base64," + base64.b64encode(png).decode()
 
     async def initialize(self) -> None:
         """当插件被激活时会调用这个方法"""

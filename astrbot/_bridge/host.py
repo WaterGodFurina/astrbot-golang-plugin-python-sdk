@@ -177,6 +177,20 @@ class HostBridge:
 
         return base64.b64decode(resp.image_base64)
 
+    def html_render(self, template: str, data: str = "", options: str = "") -> bytes:
+        """调用宿主 HtmlRender，返回 PNG 字节。"""
+        if not self.ensure_connected():
+            raise RuntimeError("宿主桥未就绪（HtmlRender 不可用）")
+        resp = self._stub.HtmlRender(
+            plugin_pb2.HtmlRenderRequest(
+                template=template, data=data, options=options
+            ),
+            timeout=120,
+        )
+        import base64
+
+        return base64.b64decode(resp.image_base64)
+
     def send_message(self, session, chain) -> bool:
         """发送消息链。session 为 MessageSession 或 MessageChain。"""
         from astrbot.core.platform.message_session import MessageSession
@@ -236,6 +250,12 @@ class HostBridge:
     async def text_to_image_async(self, text: str, template_name: str = "") -> bytes:
         """真异步 text_to_image。"""
         return await asyncio.to_thread(self.text_to_image, text, template_name)
+
+    async def html_render_async(
+        self, template: str, data: str = "", options: str = ""
+    ) -> bytes:
+        """真异步 html_render。"""
+        return await asyncio.to_thread(self.html_render, template, data, options)
 
     async def get_config_async(self, plugin_name: str) -> dict:
         return await asyncio.to_thread(self.get_config, plugin_name)
