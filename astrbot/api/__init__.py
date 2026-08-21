@@ -1,3 +1,5 @@
+import logging
+
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.provider.func_tool_manager import (
     FuncTool,
