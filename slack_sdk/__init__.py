@@ -58,12 +58,13 @@ class WebClient:
         """未显式实现的方法 → 动态转发 call_action。
 
         Python 方法名下划线风格（conversations_history / chat_postMessage）
-        映射为 Slack API 点分名：首个下划线换成点（conversations.history /
-        chat.postMessage），与显式方法的点分约定一致。
+        映射为 Slack API 点分名：所有下划线换成点（conversations.history /
+        chat.postMessage），支持任意段数（apps_permissions_requests_list →
+        apps.permissions.requests.list），与显式方法的点分约定一致。
         """
         if method.startswith("_"):
             raise AttributeError(method)
-        api = method.replace("_", ".", 1)
+        api = method.replace("_", ".")
 
         async def _call(**params):
             return await get_bridge().call_action_async("slack", api, params)

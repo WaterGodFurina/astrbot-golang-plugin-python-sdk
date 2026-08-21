@@ -823,6 +823,16 @@ class HostServiceStub:
                 request_serializer=plugin__pb2.UnregisterSessionWaitRequest.SerializeToString,
                 response_deserializer=plugin__pb2.Empty.FromString,
                 _registered_method=True)
+        self.RegisterBridgeHook = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/RegisterBridgeHook',
+                request_serializer=plugin__pb2.BridgeHookRequest.SerializeToString,
+                response_deserializer=plugin__pb2.Empty.FromString,
+                _registered_method=True)
+        self.UnregisterBridgeHook = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/UnregisterBridgeHook',
+                request_serializer=plugin__pb2.BridgeHookRequest.SerializeToString,
+                response_deserializer=plugin__pb2.Empty.FromString,
+                _registered_method=True)
 
 
 class HostServiceServicer:
@@ -1062,6 +1072,23 @@ class HostServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def RegisterBridgeHook(self, request, context):
+        """── 桥接钩子（botpy/telegram 等兼容层用）──
+        插件向宿主注册"桥接钩子"：宿主收到入站消息时把序列化事件推给该插件的
+        HandleHook(name=hook_name)，兼容层再分发到装饰器注册的 handler。
+        注册表为空 = 宿主零额外推送开销。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def UnregisterBridgeHook(self, request, context):
+        """插件向宿主注销桥接钩子。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_HostServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -1223,6 +1250,16 @@ def add_HostServiceServicer_to_server(servicer, server):
             'UnregisterSessionWait': grpc.unary_unary_rpc_method_handler(
                     servicer.UnregisterSessionWait,
                     request_deserializer=plugin__pb2.UnregisterSessionWaitRequest.FromString,
+                    response_serializer=plugin__pb2.Empty.SerializeToString,
+            ),
+            'RegisterBridgeHook': grpc.unary_unary_rpc_method_handler(
+                    servicer.RegisterBridgeHook,
+                    request_deserializer=plugin__pb2.BridgeHookRequest.FromString,
+                    response_serializer=plugin__pb2.Empty.SerializeToString,
+            ),
+            'UnregisterBridgeHook': grpc.unary_unary_rpc_method_handler(
+                    servicer.UnregisterBridgeHook,
+                    request_deserializer=plugin__pb2.BridgeHookRequest.FromString,
                     response_serializer=plugin__pb2.Empty.SerializeToString,
             ),
     }
@@ -2090,6 +2127,60 @@ class HostService:
             target,
             '/astrbot.sdk.v1.HostService/UnregisterSessionWait',
             plugin__pb2.UnregisterSessionWaitRequest.SerializeToString,
+            plugin__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RegisterBridgeHook(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/RegisterBridgeHook',
+            plugin__pb2.BridgeHookRequest.SerializeToString,
+            plugin__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UnregisterBridgeHook(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/UnregisterBridgeHook',
+            plugin__pb2.BridgeHookRequest.SerializeToString,
             plugin__pb2.Empty.FromString,
             options,
             channel_credentials,

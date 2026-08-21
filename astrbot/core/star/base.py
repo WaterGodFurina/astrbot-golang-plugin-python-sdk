@@ -71,7 +71,9 @@ class Star(CommandParserMixin, PluginKVStoreMixin):
         from astrbot._bridge.host import get_bridge
 
         try:
-            png = get_bridge().text_to_image(text, "")
+            # text_to_image 是同步 RPC，经 host.py 的 text_to_image_async
+            # （asyncio.to_thread 包装）移出事件循环，避免阻塞常驻 loop。
+            png = await get_bridge().text_to_image_async(text, "")
         except Exception as e:
             logger.warning(f"text_to_image 失败: {e}")
             raise
@@ -108,7 +110,9 @@ class Star(CommandParserMixin, PluginKVStoreMixin):
             options_json = json.dumps(options or {}, ensure_ascii=False)
 
         try:
-            png = get_bridge().html_render(tmpl, data_json, options_json)
+            # html_render 是同步 RPC，经 host.py 的 html_render_async
+            # （asyncio.to_thread 包装）移出事件循环，避免阻塞常驻 loop。
+            png = await get_bridge().html_render_async(tmpl, data_json, options_json)
         except Exception as e:
             logger.warning(f"html_render 失败: {e}")
             raise

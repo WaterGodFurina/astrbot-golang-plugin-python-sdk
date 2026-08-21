@@ -160,6 +160,14 @@ service HostService {
   rpc RegisterSessionWait(RegisterSessionWaitRequest) returns (RegisterSessionWaitResponse);
   // 插件注销等待（会话结束/超时）。
   rpc UnregisterSessionWait(UnregisterSessionWaitRequest) returns (Empty);
+
+  // ── 桥接钩子（botpy/telegram 等兼容层用）──
+  // 插件向宿主注册"桥接钩子"：宿主收到入站消息时把序列化事件推给该插件的
+  // HandleHook(name=hook_name)，兼容层再分发到装饰器注册的 handler。
+  // 注册表为空 = 宿主零额外推送开销。
+  rpc RegisterBridgeHook(BridgeHookRequest) returns (Empty);
+  // 插件向宿主注销桥接钩子。
+  rpc UnregisterBridgeHook(BridgeHookRequest) returns (Empty);
 }
 
 message Empty {}
@@ -445,6 +453,15 @@ message ChatLLMRequest {
   // Optional image URLs/paths/base64 appended to the user message
   // (multimodal request).
   repeated string image_urls = 4;
+  // Optional audio URLs/paths appended to the user message (multimodal
+  // request, provider-dependent).
+  repeated string audio_urls = 5;
+  // Function tool definitions as a JSON array (OpenAI function schema).
+  bytes tools_json = 6;
+  // Multi-turn context as a JSON array ([{"role","content"}]).
+  bytes contexts_json = 7;
+  // Target provider id; empty = use the default provider.
+  string provider_id = 8;
 }
 
 message ChatLLMResponse {
@@ -684,6 +701,14 @@ message RegisterSessionWaitResponse {
 
 message UnregisterSessionWaitRequest {
   string wait_id = 1;
+}
+
+// 桥接钩子注册/注销（botpy/telegram 等兼容层用）：宿主收到入站消息时把
+// 序列化事件推给该插件的 HandleHook(name=hook_name)，兼容层再分发到
+// 装饰器注册的 handler。注册表为空 = 宿主零额外推送开销。
+message BridgeHookRequest {
+  string plugin_name = 1;
+  string hook_name = 2;
 }
 
 message FeedSessionWaitRequest {

@@ -5,6 +5,7 @@ Context 的方法经宿主 HostService RPC 反向调用实现；宿主桥由
 """
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
@@ -432,11 +433,40 @@ class Context:
 
         if prompt is None:
             prompt = ""
+        tools_json: str | None = None
+        if tools:
+            tool_defs = []
+            for t in tools:
+                name = getattr(t, "name", None)
+                description = getattr(t, "description", None)
+                parameters = getattr(t, "parameters", None)
+                if name is None or description is None or parameters is None:
+                    continue
+                tool_defs.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "description": description,
+                            "parameters": parameters,
+                        },
+                    }
+                )
+            if tool_defs:
+                tools_json = json.dumps(tool_defs)
+        contexts_json: str | None = None
         if contexts:
-            last = contexts[-1] if isinstance(contexts[-1], dict) else None
-            if last and last.get("content"):
-                prompt = str(last["content"]) + "\n" + prompt
-        text = await self._bridge().chat_llm_async(prompt, system_prompt or "", image_urls or [])
+            contexts_json = json.dumps(contexts, ensure_ascii=False)
+        text = await self._bridge().chat_llm_async(
+            prompt,
+            system_prompt or "",
+            image_urls or [],
+            session_id="",
+            audio_urls=audio_urls or [],
+            tools_json=tools_json,
+            contexts_json=contexts_json,
+            provider_id=chat_provider_id,
+        )
         resp = LLMResponse(role="assistant")
         from astrbot.core.message.message_event_result import MessageChain
         from astrbot.core.message.components import Plain

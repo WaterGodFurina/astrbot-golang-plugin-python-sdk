@@ -14,6 +14,12 @@ from astrbot.core.star.star import StarMetadata, star_map, star_registry
 
 logger = logging.getLogger("astrbot.loader")
 
+# 插件生命周期超时（秒），可用环境变量覆盖：initialize() 与 terminate() 里
+# 插件可能做网络拉取/模型调用等耗时操作，默认值取大些避免误杀；热路径
+# （正常消息处理）不涉及这些调用。
+INIT_TIMEOUT = float(os.environ.get("ASTRBOT_PLUGIN_INIT_TIMEOUT", "60"))
+TERM_TIMEOUT = float(os.environ.get("ASTRBOT_PLUGIN_TERM_TIMEOUT", "30"))
+
 
 def sanitize_module_name(name: str) -> str:
     """目录名 → 合法 Python 模块名。
@@ -233,7 +239,16 @@ def instantiate_plugin(metadata: StarMetadata, context: Context) -> None:
     # 对齐 Python 本体 star_manager：先带 config 试，TypeError 回退无 config。
     try:
         inst = star_cls(context, config)
-    except TypeError:
+    except TypeError as e:
+        # 仅当异常确为参数问题（消息含 config/argument 关键字）才回退为
+        # 仅 context 实例化；__init__ 内部抛出的 TypeError（与参数无关）不应
+        # 被误判为"不收 config"，否则会以错误状态重试。
+        if (
+            "config" not in str(e)
+            and "positional argument" not in str(e)
+            and "argument" not in str(e)
+        ):
+            raise
         logger.info(
             f"插件 {metadata.name or metadata.root_dir_name} 的 __init__ 不接受 "
             f"config 参数，回退为仅 context 实例化"
@@ -246,12 +261,12 @@ def instantiate_plugin(metadata: StarMetadata, context: Context) -> None:
     if hasattr(inst, "plugin_id") is False:
         try:
             setattr(star_cls, "plugin_id", plugin_id)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"注入 plugin_id 失败（插件 {metadata.module.__name__}）: {e}")
     try:
         setattr(star_cls, "name", metadata.name or "")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"注入 name 失败（插件 {metadata.module.__name__}）: {e}")
 
     if config is not None and not hasattr(inst, "config"):
         inst.config = config
@@ -259,7 +274,7 @@ def instantiate_plugin(metadata: StarMetadata, context: Context) -> None:
     # 生命周期 initialize()
     init = getattr(inst, "initialize", None)
     if init is not None:
-        loop.run_coro(init(), timeout=30)
+        loop.run_coro(init(), timeout=INIT_TIMEOUT)
         logger.info(f"插件 {metadata.module.__name__} initialize() 完成")
 
 
@@ -290,7 +305,7 @@ def terminate_plugin(metadata: StarMetadata) -> None:
         if fn is None:
             continue
         try:
-            loop.run_coro(fn(), timeout=10)
+            loop.run_coro(fn(), timeout=TERM_TIMEOUT)
         except Exception as e:
             logger.warning(f"插件 {metadata.name} {name}() 失败: {e}")
         break

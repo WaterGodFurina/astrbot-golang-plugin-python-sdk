@@ -248,7 +248,9 @@ def main() -> int:
         pass
     finally:
         lifecycle.set(LifecycleStateMachine.STOPPING)
-        server.stop(0)
+        # stop(5)：给 in-flight RPC 5 秒宽限期完成，避免无宽限（stop(0)）立即
+        # 终止导致宿主侧 RPC 中断/超时；先停 RPC 再停事件循环，顺序合理。
+        server.stop(5)
         event_loop.stop()
         lifecycle.set(LifecycleStateMachine.STOPPED)
     return 0

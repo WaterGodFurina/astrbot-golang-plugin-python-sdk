@@ -68,8 +68,10 @@ class PluginUploadFile:
     def __init__(self, filename: str, content_type: str = "", content: bytes = b"") -> None:
         self.filename: str | None = filename
         self.content_type: str | None = content_type
-        self.content_length: int | None = len(content)
-        self._content = content
+        # 用 bytearray 累积：write 时 extend 是摊还 O(1)，避免 bytes 的
+        # `+=` 每次整体拷贝（O(n) 拼接）。
+        self._content = bytearray(content)
+        self.content_length: int | None = len(self._content)
         self._pos = 0
 
     async def save(self, destination: str | Path) -> None:
@@ -83,10 +85,11 @@ class PluginUploadFile:
         else:
             data = self._content[self._pos:self._pos + size]
         self._pos += len(data)
-        return data
+        # bytearray 切片转回 bytes，保持原有返回值类型
+        return bytes(data)
 
     async def write(self, data: bytes) -> None:
-        self._content += data
+        self._content.extend(data)
         self.content_length = len(self._content)
 
     async def seek(self, offset: int) -> None:
@@ -144,14 +147,29 @@ class PluginRequest:
         if self._form_cache is not None:
             return
         import json as _json
+        from urllib.parse import parse_qs
 
-        try:
-            data = _json.loads(self._raw_body.decode("utf-8"))
-            if isinstance(data, dict):
-                self._form_cache = PluginMultiDict([(str(k), str(v)) for k, v in data.items()])
+        content_type = (self.content_type or "").lower()
+        if "application/json" in content_type:
+            try:
+                data = _json.loads(self._raw_body.decode("utf-8"))
+                if isinstance(data, dict):
+                    self._form_cache = PluginMultiDict(
+                        [(str(k), str(v)) for k, v in data.items()]
+                    )
+                    return
+            except Exception:
+                pass
+        elif "application/x-www-form-urlencoded" in content_type:
+            try:
+                text = self._raw_body.decode("utf-8")
+                parsed = parse_qs(text, keep_blank_values=True)
+                pairs = [(k, v) for k, values in parsed.items() for v in values]
+                self._form_cache = PluginMultiDict(pairs)
                 return
-        except Exception:
-            pass
+            except Exception:
+                pass
+        # 其余类型不支持，回退空表单
         self._form_cache = PluginMultiDict([])
 
     async def form(self) -> PluginMultiDict[str]:
@@ -339,6 +357,12 @@ def file_response(
 
     path = Path(path)
     body = path.read_bytes()
+    # 上限保护：整文件一次性读入内存，超过 64MB 拒绝（对齐参考实现的文件
+    # 大小限制思路），避免超大文件把宿主/插件进程内存打爆。
+    if len(body) > 64 * 1024 * 1024:
+        raise ValueError(
+            f"文件 {path} 大小超过 64MB 上限，拒绝以 file_response 发送"
+        )
 
     merged = dict(headers or {})
     if content_type is not None:

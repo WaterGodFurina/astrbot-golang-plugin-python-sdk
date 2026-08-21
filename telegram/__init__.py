@@ -9,9 +9,17 @@ HostBridge.call_action("telegram", api, params) 转发宿主。装饰器事件�
 """
 from __future__ import annotations
 
+import inspect
+import logging
+import threading
 from typing import Any
 
+from astrbot._bridge import loop
 from astrbot._bridge.host import get_bridge
+
+logger = logging.getLogger("telegram")
+
+TELEGRAM_BRIDGE_HOOK = "__telegram_bridge__"
 
 __all__ = [
     "Bot",
@@ -169,8 +177,12 @@ class Bot:
         if method.startswith("_"):
             raise AttributeError(method)
 
+        # snake_case → camelCase（send_location → sendLocation），对齐显式方法的 API 名
+        parts = method.split("_")
+        api = parts[0] + "".join(p.capitalize() for p in parts[1:])
+
         async def _call(**params):
-            return await get_bridge().call_action_async("telegram", method, params)
+            return await get_bridge().call_action_async("telegram", api, params)
 
         return _call
 
@@ -191,25 +203,114 @@ class Update:
             setattr(self, k, v)
 
 
-class Application:
-    """Application/Updater 骨架：add_handler 保留注册面。
+class _Registry:
+    """插件进程内 Application 实例注册表（桥接钩子注入 + 事件分发用）。"""
 
-    注意：telegram 事件分发尚未接线（宿主 telegram 适配器暂不推送原始
-    Update 事件），add_handler 注册的 handler 当前不会被执行——与
-    aiocqhttp 兼容层的完整分发链路不同。插件请改用 Bot 的发送方法 +
-    AstrBot 自身的命令/过滤器体系。
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._instances: list[Application] = []
+
+    def register(self, app: "Application") -> None:
+        with self._lock:
+            if app not in self._instances:
+                self._instances.append(app)
+
+    def has_any(self) -> bool:
+        with self._lock:
+            return bool(self._instances)
+
+    def instances(self) -> list["Application"]:
+        with self._lock:
+            return list(self._instances)
+
+
+_registry = _Registry()
+
+
+class _Context:
+    """极简 handler context：带 effective_chat / effective_user（对齐
+    python-telegram-bot 的 CallbackContext 常用字段）。"""
+
+    def __init__(self, update: Update, bot: Bot | None):
+        self.update = update
+        self.bot = bot
+        self.effective_chat = update.message.chat if update and update.message else None
+        self.effective_user = (
+            update.message.from_user if update and update.message else None
+        )
+
+
+def _run_handler(handler, update: Update, app: "Application") -> None:
+    """同步/异步 handler 都在宿主事件循环里执行，异常不抛出桥接。
+
+    handler 支持两种形态：python-telegram-bot 风格的 MessageHandler（带
+    .callback），或直接可调用对象。只处理消息事件（对齐原版逻辑）。
+    """
+    if not update.message:
+        return
+    callback = getattr(handler, "callback", None) or handler
+    try:
+        result = callback(update, _Context(update, app.bot))
+        if inspect.iscoroutine(result):
+            loop.run_coro(result)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"telegram handler {getattr(handler, '__name__', handler)} 执行失败: {e}")
+
+
+def dispatch(event_data: dict) -> None:
+    """把宿主推来的序列化 AstrMessageEvent 分发到各 Application 的 handler。
+
+    event_data 即 HandleHook 收到的序列化 AstrMessageEvent。与原版 AstrBot
+    逻辑对齐：只处理 update.message（不构造 callback_query）。无注册实例
+    直接返回（宿主零额外开销）。
+    """
+    if not _registry.has_any():
+        return
+    if not isinstance(event_data, dict) or not event_data:
+        return
+    is_group = bool(event_data.get("is_group", False))
+    message = Message(
+        message_id=event_data.get("message_id"),
+        text=event_data.get("plain_text") or event_data.get("message_str") or "",
+        chat=Chat(
+            id=str(event_data.get("conv_id", "")),
+            type="group" if is_group else "private",
+        ),
+        from_user=User(
+            id=event_data.get("sender_id"),
+            first_name=event_data.get("sender_name", ""),
+        ),
+        date=event_data.get("timestamp", 0),
+    )
+    update = Update(update_id=0, message=message)
+    for app in _registry.instances():
+        for handler in list(app._handlers):
+            _run_handler(handler, update, app)
+
+
+class Application:
+    """Application/Updater 骨架：add_handler 注册的 handler 由宿主驱动分发。
+
+    事件循环由宿主驱动：宿主收到入站消息经 __telegram_bridge__ 桥接钩子把
+    序列化 AstrMessageEvent 推给本插件，telegram.dispatch 重建 Update 后分发给
+    add_handler 注册的 handler（对齐 python-telegram-bot：handler 形如
+    MessageHandler(filters, callback)，兼容层按 handler.callback / handler.filters
+    或直接可调用对象处理）。
     """
 
     def __init__(self, bot: Bot | None = None, **kw):
         self.bot = bot
         self._handlers: list = []
+        _registry.register(self)
+        # 向宿主注册桥接钩子：宿主收到入站消息时把序列化事件推给本插件的
+        # HandleHook，再经 telegram.dispatch 分发到 handler。失败仅告警，
+        # 不影响插件其它能力（普通调用路径零新增开销）。
+        try:
+            get_bridge().register_bridge_hook(TELEGRAM_BRIDGE_HOOK)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"telegram 桥接钩子注册失败: {e}")
 
     def add_handler(self, handler) -> None:
-        import logging
-
-        logging.getLogger("telegram").warning(
-            "telegram Application.add_handler：事件分发暂不支持，handler 不会执行"
-        )
         self._handlers.append(handler)
 
     def add_error_handler(self, handler) -> None:

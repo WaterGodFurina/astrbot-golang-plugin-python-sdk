@@ -84,13 +84,25 @@ def file_uri_to_path(uri: str) -> str:
 
 
 def _download_to_temp(url: str, suffix: str = "") -> str:
-    """把 http(s) 媒体下载到临时文件，返回本地路径。"""
+    """把 http(s) 媒体下载到临时文件，返回本地路径。
+
+    分块流式写入（64KB/块），避免整段响应一次性载入内存（大文件/慢
+    链接会显著膨胀内存占用）。另：显式构建 ProxyHandler opener 读取
+    环境代理（http_proxy/https_proxy/all_proxy 等），与 Python 本体
+    aiohttp trust_env=True 语义对齐——urllib 默认未必走系统代理。
+    """
     os.makedirs(tempfile.gettempdir(), exist_ok=True)
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     tmp.close()
+    # 显式带 ProxyHandler 的 opener：走环境变量代理；无代理环境等同默认行为。
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler())
     try:
-        with urllib.request.urlopen(url, timeout=30) as resp, open(tmp.name, "wb") as f:
-            f.write(resp.read())
+        with opener.open(url, timeout=30) as resp, open(tmp.name, "wb") as f:
+            while True:
+                chunk = resp.read(64 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
         return tmp.name
     except Exception:
         try:

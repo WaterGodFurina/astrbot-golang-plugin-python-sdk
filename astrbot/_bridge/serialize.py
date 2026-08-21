@@ -62,7 +62,12 @@ def component_from_json(data: dict) -> BaseMessageComponent:
             path=data.get("path") or None,
         )
     if ctype == "Face":
-        return Face(id=int(data.get("id", 0) or 0))
+        try:
+            face_id = int(data.get("id", 0) or 0)
+        except (TypeError, ValueError):
+            # 非数字 id（畸形数据）兜底为 0，避免解析崩溃
+            face_id = 0
+        return Face(id=face_id)
     if ctype == "Emoji":
         comp = Unknown(text="")
         comp.type = "Emoji"
@@ -122,14 +127,18 @@ def component_to_json(comp: BaseMessageComponent) -> dict:
                 out["file"] = file_
         return out
     if isinstance(comp, File):
+        # 统一用真实属性：url（远程链接）与 file_（本地路径/base64 等承载
+        # 字段）。不访问 File.file 属性——它是会触发下载/临时文件的 property，
+        # 序列化时不应引入下载副作用（也避免热路径上的额外开销）。
         out = {"type": "File", "name": comp.name or "file"}
         if getattr(comp, "url", None):
             out["url"] = comp.url
         file_ = getattr(comp, "file_", None)
         if file_:
-            out["file"] = file_
-        if getattr(comp, "file", None) and not file_:
-            out["path"] = comp.file
+            if file_.startswith("base64://"):
+                out["base64"] = file_[len("base64://"):]
+            else:
+                out["file"] = file_
         return out
     if isinstance(comp, Video):
         out = {"type": "Video"}

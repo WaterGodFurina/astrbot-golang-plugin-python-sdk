@@ -55,7 +55,7 @@ class BaseFunctionToolExecutor:
         import inspect
 
         if tool.handler is not None and callable(tool.handler):
-            result = tool.handler(**tool_args)
+            result = tool.handler(run_context, **tool_args)
             if inspect.isawaitable(result):
                 result = await result
             yield result
@@ -98,6 +98,11 @@ def _plugin_logger():
     return logging.getLogger(f"astrbot.plugin.{module_name}")
 
 
+# 按 module_name 缓存插件 logger：日志每次调用都走 __getattr__，
+# 避免反复 sys._getframe(1) 查找调用方模块（对齐参考的缓存机制）。
+_logger_cache: dict[str, logging.Logger] = {}
+
+
 class _PluginContextLogger:
     """把 astrbot.api.logger 调用路由到调用方插件 logger。"""
 
@@ -106,7 +111,11 @@ class _PluginContextLogger:
         import sys
 
         module_name = sys._getframe(1).f_globals.get("__name__", "")
-        return getattr(logging.getLogger(f"astrbot.plugin.{module_name}"), item)
+        logger = _logger_cache.get(module_name)
+        if logger is None:
+            logger = logging.getLogger(f"astrbot.plugin.{module_name}")
+            _logger_cache[module_name] = logger
+        return getattr(logger, item)
 
 
 logger = _PluginContextLogger()
@@ -118,7 +127,8 @@ class HtmlRenderer:
     render_t2i 走宿主桥 HostBridge.text_to_image_async（宿主渲染文本为
     图片，返回 base64 PNG）解码为 PNG 字节；return_url=True 时返回
     data:image/png;base64,... 前缀的 URL，否则返回 bytes。渲染失败返回
-    None。render_custom_template 因无模板引擎支持，始终返回 None。
+    None。render_custom_template 走宿主桥 HostBridge.html_render_async
+    渲染自定义模板（tmpl + data JSON），同样失败返回 None。
     """
 
     async def render_t2i(self, text: str, return_url: bool = True):
@@ -136,8 +146,28 @@ class HtmlRenderer:
         return "data:image/png;base64," + base64.b64encode(png).decode()
 
     async def render_custom_template(self, tmpl: str, data: dict, return_url: bool = True):
-        """自定义模板渲染：Go 宿主无模板引擎，直接返回 None。"""
-        return None
+        """自定义模板渲染：经宿主 HtmlRender 桥渲染。
+
+        模板内容 tmpl 与渲染数据 data（序列化为 JSON）一并交给宿主，返回
+        渲染出的 PNG 图片（return_url=True 时返回 data URL，否则返回 PNG
+        字节）；渲染失败返回 None 并告警。
+        """
+        import base64
+        import json
+
+        from astrbot._bridge.host import get_bridge
+
+        try:
+            png = await get_bridge().html_render_async(
+                template=tmpl,
+                data=json.dumps(data, ensure_ascii=False),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"自定义模板渲染失败: {e}")
+            return None
+        if not return_url:
+            return png
+        return "data:image/png;base64," + base64.b64encode(png).decode()
 
     async def initialize(self) -> None:
         """初始化：无宿主资源需要预热，no-op。"""

@@ -23,6 +23,7 @@ from astrbot.core.message.components import (
     Image,
     Plain,
     Reply,
+    Unknown,
 )
 from astrbot.core.message.message_event_result import (
     MessageChain,
@@ -410,8 +411,10 @@ class AstrMessageEvent(abc.ABC):
         asyncio.create_task(
             Metric.upload(msg_event_tick=1, adapter_name=self.platform_meta.name),
         )
-        # send_message 是同步 RPC（grpc-python 阻塞调用），不能 await。
-        bridge.send_message(self.session, message)
+        # send_message 是同步 RPC（grpc-python 阻塞调用），经 host.py 的
+        # send_message_async（asyncio.to_thread 包装）移出事件循环，避免
+        # 数百 ms 的 gRPC 往返冻结所有 async handler。
+        await bridge.send_message_async(self.session, message)
 
     async def react(self, emoji: str) -> None:
         """对当前消息添加表情回应（宿主 PlatformManager.React，平台不支持时
@@ -487,7 +490,15 @@ class AstrMessageEvent(abc.ABC):
                 msg_type = MessageType.GROUP_MESSAGE if is_group else MessageType.FRIEND_MESSAGE
         else:
             msg_type = MessageType.GROUP_MESSAGE if is_group else MessageType.FRIEND_MESSAGE
-        chain = [component_from_json(c) for c in (data.get("chain") or [])]
+        # 单个组件反序列化失败不应拖垮整条消息链：逐个 try/except，失败
+        # 组件用 Unknown(text="") 兜底并告警。
+        chain = []
+        for c in (data.get("chain") or []):
+            try:
+                chain.append(component_from_json(c))
+            except Exception as e:
+                logger.warning(f"from_event_json: 组件反序列化失败，已用 Unknown 兜底: {e}")
+                chain.append(Unknown(text=""))
 
         obj = AstrBotMessage()
         obj.type = msg_type

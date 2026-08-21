@@ -30,6 +30,10 @@ class HostBridge:
     def __init__(self) -> None:
         self._channel: grpc.Channel | None = None
         self._stub: plugin_pb2_grpc.HostServiceStub | None = None
+        # 通道连通性已探测标志：宿主重启后通道可能处于 TRANSIENT_FAILURE 但
+        # stub 非空，仅靠 stub 非空不足以判断可用。首次/重建连接后探测一次，
+        # 成功后缓存避免每次调用都探测。
+        self._probed: bool = False
         self._lock = threading.Lock()
         self.plugin_name: str = ""
         self.plugin_id: str = ""
@@ -55,18 +59,48 @@ class HostBridge:
             with self._lock:
                 self._channel = channel
                 self._stub = stub
+                # 新连接尚未探测过连通性，置 False 让下次 ensure_connected 探测
+                self._probed = False
             return True
         except Exception as e:
             logger.debug(f"HostService connect 失败: {e}")
             return False
+
+    def _probe_alive(self) -> bool:
+        """轻量连通性探测：等待通道进入 READY 态（短超时）。探测成功缓存
+        标志，避免每次调用都探测；失败返回 False 触发清理重连。"""
+        with self._lock:
+            if self._stub is None:
+                return False
+            channel = self._channel
+        try:
+            grpc.channel_ready_future(channel).result(timeout=2.0)
+        except Exception:
+            logger.warning("HostService 通道不可用（宿主可能已重启），准备重连")
+            return False
+        with self._lock:
+            self._probed = True
+        return True
+
+    def _teardown(self) -> None:
+        """清理失效的通道/stub，并关闭旧 channel（配合 broker 缓存防 fd 泄漏）。"""
+        with self._lock:
+            self._channel = None
+            self._stub = None
+            self._probed = False
+        get_broker().close(HOST_SERVICE_APP_ID)
 
     def ensure_connected(self) -> bool:
         """确保宿主桥已连接；未连接时同步 Dial（宿主 accept 可能晚于插件
         启动，最多重试 PRECONNECT_ATTEMPTS 次）。插件加载期间
         （get_config 等）会调用本方法，不能一次失败就放弃。"""
         with self._lock:
-            if self._stub is not None:
+            if self._stub is not None and self._probed:
                 return True
+        # stub 已建但未探测 / 探测失败：走探测或清理重连路径。
+        if self._stub is not None and self._probe_alive():
+            return True
+        self._teardown()
         for i in range(PRECONNECT_ATTEMPTS):
             if self.connect():
                 return True
@@ -137,6 +171,10 @@ class HostBridge:
         system_prompt: str = "",
         image_urls: list[str] | None = None,
         session_id: str = "",
+        audio_urls: list[str] | None = None,
+        tools_json: str | None = None,
+        contexts_json: str | None = None,
+        provider_id: str = "",
     ) -> str:
         if not self.ensure_connected():
             raise RuntimeError("宿主桥未就绪（ChatLLM 不可用）")
@@ -146,6 +184,10 @@ class HostBridge:
                 system_prompt=system_prompt,
                 image_urls=image_urls or [],
                 session_id=session_id,
+                audio_urls=audio_urls or [],
+                tools_json=tools_json.encode() if tools_json else b"",
+                contexts_json=contexts_json.encode() if contexts_json else b"",
+                provider_id=provider_id,
             ),
             timeout=180,
         )
@@ -241,10 +283,22 @@ class HostBridge:
         system_prompt: str = "",
         image_urls: list[str] | None = None,
         session_id: str = "",
+        audio_urls: list[str] | None = None,
+        tools_json: str | None = None,
+        contexts_json: str | None = None,
+        provider_id: str = "",
     ) -> str:
         """真异步 chat_llm（LLM 响应可能长达数十秒，绝不能阻塞常驻 loop）。"""
         return await asyncio.to_thread(
-            self.chat_llm, prompt, system_prompt, image_urls, session_id
+            self.chat_llm,
+            prompt,
+            system_prompt,
+            image_urls,
+            session_id,
+            audio_urls,
+            tools_json,
+            contexts_json,
+            provider_id,
         )
 
     async def text_to_image_async(self, text: str, template_name: str = "") -> bytes:
@@ -292,7 +346,8 @@ class HostBridge:
                 timeout=30,
             )
             return resp.cid
-        except Exception:
+        except Exception as e:
+            logger.warning(f"GetCurrConversationID 失败: {e}")
             return ""
 
     def new_conversation(self, umo: str, platform_id: str = "", persona_id: str = "") -> str:
@@ -308,7 +363,8 @@ class HostBridge:
                 timeout=30,
             )
             return resp.cid
-        except Exception:
+        except Exception as e:
+            logger.warning(f"NewConversation 失败: {e}")
             return ""
 
     def get_conversation(
@@ -329,7 +385,8 @@ class HostBridge:
                 return None
             data = json.loads(resp.conversation_json)
             return data if isinstance(data, dict) else None
-        except Exception:
+        except Exception as e:
+            logger.warning(f"GetConversation 失败: {e}")
             return None
 
     def get_conversations(self, umo: str = "") -> list[dict]:
@@ -346,7 +403,8 @@ class HostBridge:
                 if isinstance(data, dict):
                     out.append(data)
             return out
-        except Exception:
+        except Exception as e:
+            logger.warning(f"GetConversations 失败: {e}")
             return []
 
     def delete_conversation(self, umo: str, conversation_id: str = "") -> bool:
@@ -361,7 +419,8 @@ class HostBridge:
                 timeout=30,
             )
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning(f"DeleteConversation 失败: {e}")
             return False
 
     def switch_conversation(self, umo: str, conversation_id: str) -> bool:
@@ -376,7 +435,8 @@ class HostBridge:
                 timeout=30,
             )
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning(f"SwitchConversation 失败: {e}")
             return False
 
     def update_conversation_title(self, umo: str, title: str, conversation_id: str = "") -> bool:
@@ -392,7 +452,8 @@ class HostBridge:
                 timeout=30,
             )
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning(f"UpdateConversationTitle 失败: {e}")
             return False
 
     def update_conversation_persona_id(
@@ -410,7 +471,8 @@ class HostBridge:
                 timeout=30,
             )
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning(f"UpdateConversationPersonaID 失败: {e}")
             return False
 
     # ── 人格管理 ────────────────────────────────────────────────────────────
@@ -425,7 +487,8 @@ class HostBridge:
                 if isinstance(data, dict):
                     out.append(data)
             return out
-        except Exception:
+        except Exception as e:
+            logger.warning(f"GetPersonas 失败: {e}")
             return []
 
     def get_default_persona(self, umo: str = "") -> dict | None:
@@ -440,7 +503,8 @@ class HostBridge:
                 return None
             data = json.loads(resp.persona_json)
             return data if isinstance(data, dict) else None
-        except Exception:
+        except Exception as e:
+            logger.warning(f"GetDefaultPersona 失败: {e}")
             return None
 
     def get_persona_tree(self) -> tuple[list[dict], list[dict]]:
@@ -460,7 +524,8 @@ class HostBridge:
                 if isinstance(data, dict):
                     personas.append(data)
             return folders, personas
-        except Exception:
+        except Exception as e:
+            logger.warning(f"GetPersonaTree 失败: {e}")
             return [], []
 
     def resolve_selected_persona(
@@ -491,7 +556,8 @@ class HostBridge:
                 "force_applied_persona_id": resp.force_applied_persona_id,
                 "is_default": resp.is_default,
             }
-        except Exception:
+        except Exception as e:
+            logger.warning(f"ResolveSelectedPersona 失败: {e}")
             return {}
 
     # ── Provider 管理 ───────────────────────────────────────────────────────
@@ -509,7 +575,8 @@ class HostBridge:
                 if isinstance(data, dict):
                     out.append(data)
             return out
-        except Exception:
+        except Exception as e:
+            logger.warning(f"ListProviders 失败: {e}")
             return []
 
     def get_using_provider(self, umo: str = "", capability: str = "chat_completion") -> dict | None:
@@ -524,7 +591,8 @@ class HostBridge:
                 return None
             data = json.loads(resp.provider_json)
             return data if isinstance(data, dict) else None
-        except Exception:
+        except Exception as e:
+            logger.warning(f"GetUsingProvider 失败: {e}")
             return None
 
     def set_provider(
@@ -542,7 +610,8 @@ class HostBridge:
                 timeout=30,
             )
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning(f"SetProvider 失败: {e}")
             return False
 
     def get_provider_models(self, provider_id: str) -> list[str]:
@@ -554,7 +623,8 @@ class HostBridge:
                 timeout=30,
             )
             return list(resp.models)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"GetProviderModels 失败: {e}")
             return []
 
     # ── 插件/Star 管理 ──────────────────────────────────────────────────────
@@ -569,7 +639,8 @@ class HostBridge:
                 if isinstance(data, dict):
                     out.append(data)
             return out
-        except Exception:
+        except Exception as e:
+            logger.warning(f"ListStars 失败: {e}")
             return []
 
     def get_star(self, name: str) -> dict | None:
@@ -584,7 +655,8 @@ class HostBridge:
                 return None
             data = json.loads(resp.star_json)
             return data if isinstance(data, dict) else None
-        except Exception:
+        except Exception as e:
+            logger.warning(f"GetStar 失败: {e}")
             return None
 
     def set_plugin_enabled(self, plugin_name: str, enabled: bool) -> bool:
@@ -596,7 +668,8 @@ class HostBridge:
                 timeout=30,
             )
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning(f"SetPluginEnabled 失败: {e}")
             return False
 
     def install_plugin(self, repo: str) -> bool:
@@ -608,7 +681,8 @@ class HostBridge:
                 timeout=30,
             )
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning(f"InstallPlugin 失败: {e}")
             return False
 
     def uninstall_plugin(self, plugin_name: str) -> bool:
@@ -620,7 +694,8 @@ class HostBridge:
                 timeout=30,
             )
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning(f"UninstallPlugin 失败: {e}")
             return False
 
     # ── 会话等待（SessionWaiter 跨进程喂入）────────────────────────────────
@@ -643,7 +718,7 @@ class HostBridge:
             )
             return resp.wait_id
         except Exception as e:
-            logger.debug(f"RegisterSessionWait 失败: {e}")
+            logger.warning(f"RegisterSessionWait 失败: {e}")
             return ""
 
     def unregister_session_wait(self, wait_id: str) -> None:
@@ -672,6 +747,46 @@ class HostBridge:
     async def unregister_session_wait_async(self, wait_id: str) -> None:
         """真异步 unregister_session_wait（asyncio.to_thread 包装）。"""
         await asyncio.to_thread(self.unregister_session_wait, wait_id)
+
+    # ── 桥接钩子（botpy/telegram 等兼容层用）───────────────────────────────
+    def register_bridge_hook(self, hook_name: str) -> bool:
+        """向宿主注册"桥接钩子"：宿主收到入站消息时把序列化事件推给本插件的
+        HandleHook(name=hook_name)，兼容层再分发到装饰器注册的 handler。
+
+        注册表为空 = 宿主零额外推送开销。失败（宿主不支持 / 桥未就绪 /
+        RPC 错误）返回 False，由调用方降级（仅告警，不崩）。
+        """
+        if not self.ensure_connected():
+            return False
+        try:
+            self._stub.RegisterBridgeHook(
+                plugin_pb2.BridgeHookRequest(
+                    plugin_name=self.plugin_name,
+                    hook_name=hook_name,
+                ),
+                timeout=10,
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"RegisterBridgeHook({hook_name}) 失败: {e}")
+            return False
+
+    def unregister_bridge_hook(self, hook_name: str) -> bool:
+        """向宿主注销桥接钩子（对称实现）。幂等：宿主侧无该钩子时静默。"""
+        if not self.ensure_connected():
+            return False
+        try:
+            self._stub.UnregisterBridgeHook(
+                plugin_pb2.BridgeHookRequest(
+                    plugin_name=self.plugin_name,
+                    hook_name=hook_name,
+                ),
+                timeout=10,
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"UnregisterBridgeHook({hook_name}) 失败: {e}")
+            return False
 
     # ── 会话管理 async ──────────────────────────────────────────────────────
     async def get_curr_conversation_id_async(self, umo: str) -> str:

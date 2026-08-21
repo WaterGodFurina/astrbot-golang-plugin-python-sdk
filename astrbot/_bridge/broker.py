@@ -24,6 +24,8 @@ class GRPCBrokerServicer(goplugin_pb2_grpc.GRPCBrokerServicer):
     def __init__(self) -> None:
         # service_id -> (network, address)
         self._conns: dict[int, tuple[str, str]] = {}
+        # service_id -> channel（dial 缓存，重连/重建时复用，避免 fd 泄漏）
+        self._channels: dict[int, grpc.Channel] = {}
         self._cv = threading.Condition()
 
     def StartStream(self, request_iterator, context):
@@ -38,6 +40,10 @@ class GRPCBrokerServicer(goplugin_pb2_grpc.GRPCBrokerServicer):
         return iter(())
 
     def dial(self, service_id: int, timeout: float = DIAL_TIMEOUT) -> grpc.Channel:
+        # 缓存命中直接返回，避免每次创建新 channel（重连场景 fd 泄漏）
+        cached = self._channels.get(service_id)
+        if cached is not None:
+            return cached
         # 条件等待（StartStream 会 notify_all），避免 50ms 忙轮询
         with self._cv:
             if not self._cv.wait_for(lambda: service_id in self._conns, timeout=timeout):
@@ -48,14 +54,26 @@ class GRPCBrokerServicer(goplugin_pb2_grpc.GRPCBrokerServicer):
         if network not in ("tcp", "unix"):
             raise ValueError(f"broker: unsupported network {network!r}")
         if network == "unix":
-            return grpc.insecure_channel(
+            channel = grpc.insecure_channel(
                 f"unix:{address}",
                 options=[("grpc.max_receive_message_length", 128 * 1024 * 1024)],
             )
-        return grpc.insecure_channel(
-            address,
-            options=[("grpc.max_receive_message_length", 128 * 1024 * 1024)],
-        )
+        else:
+            channel = grpc.insecure_channel(
+                address,
+                options=[("grpc.max_receive_message_length", 128 * 1024 * 1024)],
+            )
+        self._channels[service_id] = channel
+        return channel
+
+    def close(self, service_id: int) -> None:
+        """关闭并移除缓存的 channel（host.py 重连/清理路径调用）。"""
+        channel = self._channels.pop(service_id, None)
+        if channel is not None:
+            try:
+                channel.close()
+            except Exception as e:
+                logger.debug(f"broker: close channel service_id={service_id} 失败: {e}")
 
 
 _broker_servicer: GRPCBrokerServicer | None = None

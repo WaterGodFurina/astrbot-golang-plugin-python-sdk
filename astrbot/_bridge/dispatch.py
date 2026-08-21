@@ -1,7 +1,6 @@
 """PluginService 实现：宿主 RPC → Python 插件 handler。"""
 from __future__ import annotations
 
-import asyncio
 import inspect
 import json
 import logging
@@ -57,6 +56,16 @@ DIRECT_CALLED_HOOKS = {"on_llm_request"}
 # 再经 aiocqhttp.dispatch 分发给 @bot.on_message 等装饰器。
 AIOCQHTTP_BRIDGE_HOOK = "__aiocqhttp_bridge__"
 
+# botpy 兼容层的桥接钩子：插件实例化了 Client（装饰器事件循环）时注册，宿主
+# 把序列化 AstrMessageEvent 推给 HandleHook，再经 botpy.dispatch 分发到
+# @on_message / @on_at_message 等装饰器。
+BOTPY_BRIDGE_HOOK = "__botpy_bridge__"
+
+# telegram 兼容层的桥接钩子：插件实例化了 Application 时注册，宿主把序列化
+# AstrMessageEvent 推给 HandleHook，再经 telegram.dispatch 分发到
+# Application.add_handler 注册的 handler。
+TELEGRAM_BRIDGE_HOOK = "__telegram_bridge__"
+
 
 def _call(handler, *args, timeout: float = HANDLER_TIMEOUT, **kwargs):
     """调用 handler（async / async-generator / sync），返回收集的结果列表。"""
@@ -96,8 +105,8 @@ def _bind(handler, inst):
         first = None
         try:
             first = next(iter(inspect.signature(handler).parameters))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"handler 签名解析失败: {e}")
         if first in ("self", "cls") or first is None:
             bound = getattr(inst, handler.__name__, None)
             if bound is not None and inspect.ismethod(bound):
@@ -216,8 +225,8 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                     None,
                     None,
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"aiocqhttp 桥接钩子注册失败: {e}")
 
         for md in star_handlers_registry.all():
             inst = self.inst
@@ -332,7 +341,11 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         resp = plugin_pb2.HandleCommandResponse()
         if f is None or handler is None:
             return resp
-        event_data = json.loads(request.event_json) if request.event_json else {}
+        try:
+            event_data = json.loads(request.event_json) if request.event_json else {}
+        except json.JSONDecodeError as e:
+            logger.error(f"HandleCommand: event_json 解析失败: {e}")
+            return resp
         event = AstrMessageEvent.from_event_json(event_data)
         event.is_at_or_wake_command = True
 
@@ -385,7 +398,11 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
 
     def HandleFilter(self, request, context) -> plugin_pb2.HandleFilterResponse:
         self._wait_instanced()
-        event_data = json.loads(request.event_json) if request.event_json else {}
+        try:
+            event_data = json.loads(request.event_json) if request.event_json else {}
+        except json.JSONDecodeError as e:
+            logger.error(f"HandleFilter: event_json 解析失败: {e}")
+            return plugin_pb2.HandleFilterResponse(allow=True)
         event = AstrMessageEvent.from_event_json(event_data)
         for name, handler, inst in self.filter_handlers:
             if name == request.name:
@@ -399,15 +416,17 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                     cfg = None
                     try:
                         cfg = getattr(inst, "config", None)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"读取过滤器配置失败: {e}")
                     for f in md.event_filters:
                         if isinstance(f, CommandFilter):
                             continue
                         try:
                             if not f.filter(event, cfg):
                                 return plugin_pb2.HandleFilterResponse(allow=True)
-                        except Exception:
+                        except Exception as e:
+                            # 过滤器抛异常按"不拦截"放行，但记录日志便于排查。
+                            logger.warning(f"过滤器 {name} 的 {f} 执行异常，放行: {e}")
                             return plugin_pb2.HandleFilterResponse(allow=True)
                 bound = _bind(handler, self.inst)
                 try:
@@ -430,7 +449,11 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         """宿主推送“插件注册了等待的 umo 的入站消息”（session_waiter 跨进程
         喂入）。反序列化事件后经 try_trigger 匹配 USER_SESSIONS 中的等待会话
         并触发其 handler；无匹配返回 handled=False。"""
-        event_data = json.loads(request.event_json) if request.event_json else {}
+        try:
+            event_data = json.loads(request.event_json) if request.event_json else {}
+        except json.JSONDecodeError as e:
+            logger.error(f"FeedSessionWait: event_json 解析失败: {e}")
+            return plugin_pb2.FeedSessionWaitResponse(handled=False)
         if not event_data:
             return plugin_pb2.FeedSessionWaitResponse(handled=False)
         try:
@@ -473,16 +496,55 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
             try:
                 from aiocqhttp import dispatch as _aiocqhttp_dispatch
 
-                event_data = json.loads(request.event_json) if request.event_json else {}
+                try:
+                    event_data = json.loads(request.event_json) if request.event_json else {}
+                except json.JSONDecodeError as e:
+                    logger.error(f"HandleHook(aiocqhttp): event_json 解析失败: {e}")
+                    return resp
                 _aiocqhttp_dispatch(event_data.get("raw_message"))
             except Exception as e:  # noqa: BLE001
                 logger.error(f"aiocqhttp 事件分发失败: {e}")
+            return resp
+        # botpy 桥接钩子：把宿主推来的序列化 AstrMessageEvent 分发给
+        # @bot.on_message / @on_at_message 等装饰器（该钩子无插件 handler，
+        # 转发后直接返回）。
+        if request.name == BOTPY_BRIDGE_HOOK:
+            try:
+                from botpy import dispatch as _botpy_dispatch
+
+                try:
+                    event_data = json.loads(request.event_json) if request.event_json else {}
+                except json.JSONDecodeError as e:
+                    logger.error(f"HandleHook(botpy): event_json 解析失败: {e}")
+                    return resp
+                _botpy_dispatch(event_data)
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"botpy 事件分发失败: {e}")
+            return resp
+        # telegram 桥接钩子：把宿主推来的序列化 AstrMessageEvent 分发给
+        # Application.add_handler 注册的 handler。
+        if request.name == TELEGRAM_BRIDGE_HOOK:
+            try:
+                from telegram import dispatch as _telegram_dispatch
+
+                try:
+                    event_data = json.loads(request.event_json) if request.event_json else {}
+                except json.JSONDecodeError as e:
+                    logger.error(f"HandleHook(telegram): event_json 解析失败: {e}")
+                    return resp
+                _telegram_dispatch(event_data)
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"telegram 事件分发失败: {e}")
             return resp
         entry = self.hook_handlers.get(request.name)
         if entry is None:
             return resp
         event_name, handler, inst = entry
-        event_data = json.loads(request.event_json) if request.event_json else {}
+        try:
+            event_data = json.loads(request.event_json) if request.event_json else {}
+        except json.JSONDecodeError as e:
+            logger.error(f"HandleHook {request.name}: event_json 解析失败: {e}")
+            return resp
         event = AstrMessageEvent.from_event_json(event_data)
 
         if event_name in ("on_decorating_result", "on_result_handling"):
@@ -490,7 +552,8 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
             if request.chain_json:
                 try:
                     chain = json.loads(request.chain_json)
-                except Exception:
+                except json.JSONDecodeError as e:
+                    logger.error(f"HandleHook {request.name}: chain_json 解析失败: {e}")
                     chain = []
             from astrbot._bridge.serialize import component_from_json
 
@@ -531,8 +594,8 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                 try:
                     data = json.loads(request.payload_json)
                     pl._completion_text = data.get("text", "")
-                except Exception:
-                    pass
+                except json.JSONDecodeError as e:
+                    logger.error(f"HandleHook {request.name}: payload_json 解析失败: {e}")
             payload = pl
         elif event_name in ("on_using_llm_tool", "on_llm_tool_respond"):
             payload = ToolCall()
@@ -541,8 +604,8 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                     data = json.loads(request.payload_json)
                     payload.tool_name = data.get("tool_name", "")
                     payload.tool_args = data.get("tool_args") or {}
-                except Exception:
-                    pass
+                except json.JSONDecodeError as e:
+                    logger.error(f"HandleHook {request.name}: payload_json 解析失败: {e}")
         elif event_name == "on_plugin_error":
             payload = PluginError()
             if request.payload_json:
@@ -550,8 +613,8 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                     data = json.loads(request.payload_json)
                     payload.handler_name = data.get("handler_name", "")
                     payload.error = data.get("error", "")
-                except Exception:
-                    pass
+                except json.JSONDecodeError as e:
+                    logger.error(f"HandleHook {request.name}: payload_json 解析失败: {e}")
 
         bound = _bind(handler, self.inst)
         try:
@@ -574,7 +637,11 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         if entry is None:
             return resp
         _, handler, inst = entry
-        event_data = json.loads(request.event_json) if request.event_json else {}
+        try:
+            event_data = json.loads(request.event_json) if request.event_json else {}
+        except json.JSONDecodeError as e:
+            logger.error(f"HandleLLMRequest {request.name}: event_json 解析失败: {e}")
+            return resp
         event = AstrMessageEvent.from_event_json(event_data)
         req = ProviderRequest(
             prompt=request.user_prompt,
@@ -612,13 +679,18 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                 return plugin_pb2.HandleToolResponse(text=f"工具 {request.name} 未找到", is_error=True)
             entry = (live, self.inst)
         tool, inst = entry
-        event_data = json.loads(request.event_json) if request.event_json else {}
+        try:
+            event_data = json.loads(request.event_json) if request.event_json else {}
+        except json.JSONDecodeError as e:
+            logger.error(f"HandleTool {request.name}: event_json 解析失败: {e}")
+            return plugin_pb2.HandleToolResponse(text=f"工具 {request.name} 事件解析失败", is_error=True)
         event = AstrMessageEvent.from_event_json(event_data)
         args = {}
         if request.args_json:
             try:
                 args = json.loads(request.args_json)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"HandleTool {request.name}: args_json 解析失败: {e}")
                 args = {}
             if not isinstance(args, dict):
                 args = {}
@@ -648,12 +720,15 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
             elif hasattr(r, "content") and isinstance(r.content, list):
                 # mcp CallToolResult（嵌入式 mcp 兼容层）：提取 content 里的
                 # TextContent.text（如 Bing 搜索插件的 run 返回值）。
+                is_err = bool(getattr(r, "isError", False))
                 for c in r.content:
                     if c is None:
                         continue
                     text = getattr(c, "text", None)
                     if isinstance(text, str):
-                        texts.append(text)
+                        # isError=True 时标记为工具错误，宿主/LLM 可据此判断
+                        # 该次工具调用失败。
+                        texts.append(("[工具错误] " if is_err else "") + text)
         resp = plugin_pb2.HandleToolResponse(
             text="\n".join(t for t in texts if t), sent=event._has_send_oper
         )
@@ -765,8 +840,6 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
     def _run_web_handler(self, handler, req: plugin_pb2.HandleWebRequestRequest, path_params: dict):
         """构造 FakeQuartRequest（对齐 quart 全局 request 接口），注入
         quart._cv_request 与 astrbot.api.web.request 上下文，执行 handler。"""
-        import asyncio
-
         from astrbot.api.web import PluginRequest, PluginUploadFile, bind_request_context
 
         # 拆 query（含 multipart 表单字段已在宿主侧并入 query）
@@ -797,21 +870,15 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
 
             cv_tokens.append((_cv_app, _cv_app.set(FakeQuartAppCtx())))
             cv_tokens.append((_cv_request, _cv_request.set(fake)))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"quart 全局上下文注入失败: {e}")
 
         try:
             with bind_request_context(plugin_req):
-                args = []
-                sig_params = list(inspect.signature(handler).parameters.values())
-                positional = [
-                    p for p in sig_params
-                    if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-                ]
                 bound = _bind(handler, self.inst)
                 # 路径参数按名解包（Python 本体：view_handler(**path_values)）
                 kwargs = dict(path_params)
-                results = _call(bound, *args, **kwargs)
+                results = _call(bound, **kwargs)
                 return results[-1] if results else None
         finally:
             for var, token in reversed(cv_tokens):
@@ -847,9 +914,12 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
             try:
                 data = result.get_data()
                 if inspect.iscoroutine(data):
-                    data = asyncio.run(data)
+                    # 与常驻 loop 冲突：不能 asyncio.run（gRPC handler 线程上
+                    # 会与常驻 loop 并发竞争），走 loop.run_coro。
+                    data = loop.run_coro(data, timeout=30)
                 body = data if isinstance(data, bytes) else str(data).encode()
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Web 结果 get_data 失败，回退 body: {e}")
                 body = getattr(result, "body", b"")
             for k, v in getattr(result, "headers", {}).items():
                 headers[str(k)] = str(v)

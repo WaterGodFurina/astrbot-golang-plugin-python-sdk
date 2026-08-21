@@ -62,8 +62,12 @@ class Event(dict):
 
     @property
     def detail_type(self) -> str:
-        """事件具体类型（message_type / notice_type / request_type 等）。"""
-        return self[f"{self.type}_type"]
+        """事件具体类型（message_type / notice_type / request_type 等）。
+
+        畸形事件（有 post_type 但缺 {post_type}_type 字段）时返回空串，
+        避免 KeyError 崩溃。
+        """
+        return self.get(f"{self.type}_type", "")
 
     @property
     def sub_type(self) -> str | None:
@@ -249,9 +253,19 @@ class CQHttp:
         return deco
 
     def before_send(self, func):
+        """发送前钩子：宿主桥模式下为 no-op（消息直接由宿主转发）。
+
+        返回原 func 以保持装饰器语义（插件可无副作用地叠加该装饰器）。
+        """
+        logger.debug("before_send 在宿主桥模式下为 no-op，已忽略 %r", func)
         return func
 
     def after_send(self, func):
+        """发送后钩子：宿主桥模式下为 no-op（消息直接由宿主转发）。
+
+        返回原 func 以保持装饰器语义（插件可无副作用地叠加该装饰器）。
+        """
+        logger.debug("after_send 在宿主桥模式下为 no-op，已忽略 %r", func)
         return func
 
     def _decorator(self, event_type: str, func, sub_event=None, command=None):
@@ -285,6 +299,10 @@ class CQHttp:
             # on_command 命令匹配
             if self._command_handlers and "message" in data:
                 text = data["message"]
+                # message 为 None 时 str(None) 会变成 "None" 可能误匹配命令，
+                # 故对 None / 非 str / 非 list 直接跳过命令匹配。
+                if not isinstance(text, (str, list)):
+                    text = ""
                 if isinstance(text, list):
                     text = "".join(
                         seg.get("data", {}).get("text", "")
@@ -316,21 +334,59 @@ class CQHttp:
         """发送消息。ctx 可以是 Event（按事件路由）或 dict(group_id=...)。
 
         对齐真实 aiocqhttp：从事件/字典的 group_id / user_id 推断发送目标。
-        注意：OneBot v11 的 send_msg 不接受 self_id 参数，故不提供
-        "按 self_id 发送"的非标准分支。
+        额外支持 self_id 多账号路由：若 ctx 带 self_id（Event 或 dict），
+        则一并传给宿主，由宿主据此路由到对应账号（对齐参考实现
+        aiocqhttp_message_event.py 的 routing_params 行为）。其余 kwargs
+        原样透传给对应 action。
         """
+        routing_params = {}
+        if isinstance(ctx, dict) and ctx.get("self_id"):
+            routing_params["self_id"] = ctx["self_id"]
         if isinstance(ctx, Event):
             # Event 优先（Event 是 dict 子类，若先查 dict 会把 post_type 等
             # 事件字段一并带进 API 参数）
+            if not routing_params and ctx.get("self_id"):
+                routing_params["self_id"] = ctx["self_id"]
             gid = ctx.get("group_id")
             uid = ctx.get("user_id")
             if gid:
-                return await self.call_api("send_group_msg", group_id=_to_int(gid, "group_id"), message=message)
+                gid_int = _try_int(gid)
+                if gid_int is None:
+                    # 非数字 group_id（畸形数据）→ 走 send_msg 兜底分支，
+                    # 避免 _to_int 抛 ValueError 导致插件侧崩溃无信息
+                    return await self.call_api(
+                        "send_msg",
+                        message=message,
+                        **routing_params,
+                        **kwargs,
+                    )
+                return await self.call_api(
+                    "send_group_msg",
+                    group_id=gid_int,
+                    message=message,
+                    **routing_params,
+                    **kwargs,
+                )
             if uid:
-                return await self.call_api("send_private_msg", user_id=_to_int(uid, "user_id"), message=message)
+                uid_int = _try_int(uid)
+                if uid_int is None:
+                    return await self.call_api(
+                        "send_msg",
+                        message=message,
+                        **routing_params,
+                        **kwargs,
+                    )
+                return await self.call_api(
+                    "send_private_msg",
+                    user_id=uid_int,
+                    message=message,
+                    **routing_params,
+                    **kwargs,
+                )
         if isinstance(ctx, dict) and ("group_id" in ctx or "user_id" in ctx):
             params = dict(ctx)
             params["message"] = message
+            params.update(kwargs)
             if "group_id" in params:
                 return await self.call_api("send_group_msg", **params)
             return await self.call_api("send_private_msg", **params)
@@ -412,14 +468,36 @@ class compat:
     def run_sync(func, *args, **kwargs):
         result = func(*args, **kwargs)
         if inspect.iscoroutine(result):
-            return loop.run_coro(result)
+            try:
+                return loop.run_coro(result)
+            except RuntimeError as e:
+                # 事件循环未就绪/已关闭时 run_coro 会抛 RuntimeError；捕获并
+                # 记录日志后 re-raise，避免插件侧只见裸异常无上下文。
+                logger.error(f"compat.run_sync 在事件循环不可用的情况下执行协程失败: {e}")
+                raise
         if inspect.isasyncgen(result):
             # 异步生成器：消费并把 yield 值收集为列表返回
             async def _collect():
                 return [item async for item in result]
 
-            return loop.run_coro(_collect())
+            try:
+                return loop.run_coro(_collect())
+            except RuntimeError as e:
+                logger.error(f"compat.run_sync 在事件循环不可用的情况下消费异步生成器失败: {e}")
+                raise
         return result
+
+
+def _try_int(value) -> int | None:
+    """OneBot ID 字段（group_id/user_id）宽松转 int：int/str 可转则转，
+    否则返回 None（对齐参考实现 aiocqhttp_message_event.py 的 isdigit
+    兜底语义，供 send() 在畸形 ID 时走 send_msg 兜底分支）。"""
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _to_int(value, field: str) -> int:
