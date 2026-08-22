@@ -295,7 +295,9 @@ class Provider(AbstractProvider):
 
     def get_keys(self) -> list[str]:
         keys = self.provider_config.get("key", [""])
-        return list(keys) if keys else [""]
+        if isinstance(keys, str):
+            keys = [keys]
+        return list(keys) or [""]
 
     def set_key(self, key: str) -> None:
         self.provider_config["key"] = [key]

@@ -5,6 +5,7 @@ PluginRequest / PluginRequestProxy / request / bind_request_context。
 """
 from __future__ import annotations
 
+import asyncio
 import contextvars
 from collections.abc import Callable, KeysView
 from contextlib import contextmanager
@@ -76,8 +77,8 @@ class PluginUploadFile:
 
     async def save(self, destination: str | Path) -> None:
         path = Path(destination)
-        with path.open("wb") as output:
-            output.write(self._content)
+        # 同步写盘移到子线程，避免大文件写盘阻塞事件循环
+        await asyncio.to_thread(path.write_bytes, bytes(self._content))
 
     async def read(self, size: int = -1) -> bytes:
         if size is None or size < 0:
@@ -100,7 +101,11 @@ class PluginUploadFile:
 
 
 class PluginRequest:
-    """Request object exposed to plugin Web API handlers."""
+    """Request object exposed to plugin Web API handlers.
+
+    username / client_host 为占位字段（宿主的 Web 请求不携带认证信息），
+    恒为 None，请勿依赖其取值。
+    """
 
     def __init__(
         self,
@@ -356,13 +361,12 @@ def file_response(
     import mimetypes
 
     path = Path(path)
+    # 先做存在性与大小检查再读文件，避免超大文件整读进内存
+    if not path.is_file():
+        raise FileNotFoundError("请求的文件不存在或不可读")
+    if path.stat().st_size > 64 * 1024 * 1024:
+        raise ValueError("文件大小超过 64MB 上限，拒绝以 file_response 发送")
     body = path.read_bytes()
-    # 上限保护：整文件一次性读入内存，超过 64MB 拒绝（对齐参考实现的文件
-    # 大小限制思路），避免超大文件把宿主/插件进程内存打爆。
-    if len(body) > 64 * 1024 * 1024:
-        raise ValueError(
-            f"文件 {path} 大小超过 64MB 上限，拒绝以 file_response 发送"
-        )
 
     merged = dict(headers or {})
     if content_type is not None:
@@ -372,9 +376,11 @@ def file_response(
         guessed, _ = mimetypes.guess_type(str(path))
         merged.setdefault("Content-Type", guessed or "application/octet-stream")
     if filename:
+        # 过滤 CRLF 与引号：防止注入 Content-Disposition 响应头
+        safe = filename.replace('"', "%22").replace("\r", "").replace("\n", "")
         merged.setdefault(
             "Content-Disposition",
-            f"attachment; filename=\"{filename.replace('\"', '%22')}\"",
+            f"attachment; filename=\"{safe}\"",
         )
     return PluginWebResponse(body, status_code=200, headers=merged)
 

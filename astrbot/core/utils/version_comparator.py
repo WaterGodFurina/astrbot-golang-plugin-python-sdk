@@ -10,8 +10,10 @@ class VersionComparator:
 
         返回 1 表示 v1 > v2，返回 -1 表示 v1 < v2，返回 0 表示 v1 = v2。
         """
-        v1 = v1.lower().replace("v", "")
-        v2 = v2.lower().replace("v", "")
+        # 只去掉开头的 "v"（如 "v1.2.3"），避免误删预发布标签里的字母 v
+        # （如 "1.2.3-v2" → "1.2.3-2"）
+        v1 = re.sub(r"^v", "", v1.strip().lower())
+        v2 = re.sub(r"^v", "", v2.strip().lower())
 
         def split_version(version):
             match = re.match(

@@ -245,6 +245,7 @@ def _run_handler(handler, update: Update, app: "Application") -> None:
 
     handler 支持两种形态：python-telegram-bot 风格的 MessageHandler（带
     .callback），或直接可调用对象。只处理消息事件（对齐原版逻辑）。
+    handler 抛异常时通知 add_error_handler 注册的错误处理器。
     """
     if not update.message:
         return
@@ -255,6 +256,21 @@ def _run_handler(handler, update: Update, app: "Application") -> None:
             loop.run_coro(result)
     except Exception as e:  # noqa: BLE001
         logger.error(f"telegram handler {getattr(handler, '__name__', handler)} 执行失败: {e}")
+        _notify_error_handlers(app, update, e)
+
+
+def _notify_error_handlers(app: "Application", update: Update, exc: Exception) -> None:
+    """把 handler 异常分发给 add_error_handler 注册的错误处理器
+    （对齐 python-telegram-bot：以 (update, context) 调用）。"""
+    context = _Context(update, app.bot)
+    for eh in list(app._error_handlers):
+        try:
+            cb = getattr(eh, "callback", None) or eh
+            result = cb(update, context)
+            if inspect.iscoroutine(result):
+                loop.run_coro(result)
+        except Exception as e2:  # noqa: BLE001
+            logger.error(f"telegram error handler {getattr(eh, '__name__', eh)} 执行失败: {e2}")
 
 
 def dispatch(event_data: dict) -> None:
@@ -301,6 +317,7 @@ class Application:
     def __init__(self, bot: Bot | None = None, **kw):
         self.bot = bot
         self._handlers: list = []
+        self._error_handlers: list = []
         _registry.register(self)
         # 向宿主注册桥接钩子：宿主收到入站消息时把序列化事件推给本插件的
         # HandleHook，再经 telegram.dispatch 分发到 handler。失败仅告警，
@@ -314,11 +331,9 @@ class Application:
         self._handlers.append(handler)
 
     def add_error_handler(self, handler) -> None:
-        import logging
-
-        logging.getLogger("telegram").warning(
-            "telegram Application.add_error_handler：事件分发暂不支持"
-        )
+        """注册错误处理器（对齐 python-telegram-bot）：任一 handler 抛异常时
+        以 (update, context) 调用错误处理器。"""
+        self._error_handlers.append(handler)
 
     async def initialize(self) -> None:
         pass

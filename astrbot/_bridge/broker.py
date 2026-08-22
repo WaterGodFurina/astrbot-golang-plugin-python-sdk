@@ -40,12 +40,12 @@ class GRPCBrokerServicer(goplugin_pb2_grpc.GRPCBrokerServicer):
         return iter(())
 
     def dial(self, service_id: int, timeout: float = DIAL_TIMEOUT) -> grpc.Channel:
-        # 缓存命中直接返回，避免每次创建新 channel（重连场景 fd 泄漏）
-        cached = self._channels.get(service_id)
-        if cached is not None:
-            return cached
-        # 条件等待（StartStream 会 notify_all），避免 50ms 忙轮询
+        # 锁内检查缓存（并发建连时避免各自创建 channel 互相覆盖、泄漏 fd）
         with self._cv:
+            cached = self._channels.get(service_id)
+            if cached is not None:
+                return cached
+            # 条件等待（StartStream 会 notify_all），避免 50ms 忙轮询
             if not self._cv.wait_for(lambda: service_id in self._conns, timeout=timeout):
                 raise TimeoutError(
                     f"broker: timeout waiting for connection info (service_id={service_id})"
@@ -63,12 +63,21 @@ class GRPCBrokerServicer(goplugin_pb2_grpc.GRPCBrokerServicer):
                 address,
                 options=[("grpc.max_receive_message_length", 128 * 1024 * 1024)],
             )
-        self._channels[service_id] = channel
-        return channel
+        # 二次检查：并发路径下可能有别的线程已写入，先建者优先，后建者关闭自己的
+        with self._cv:
+            existing = self._channels.get(service_id)
+            if existing is not None:
+                channel.close()
+                return existing
+            self._channels[service_id] = channel
+            return channel
 
     def close(self, service_id: int) -> None:
         """关闭并移除缓存的 channel（host.py 重连/清理路径调用）。"""
-        channel = self._channels.pop(service_id, None)
+        # pop 持锁（与 dial 的二次检查互斥），避免与并发 dial 竞态：
+        # 否则 dial 可能刚命中缓存返回 channel 就被这里 pop 并关闭
+        with self._cv:
+            channel = self._channels.pop(service_id, None)
         if channel is not None:
             try:
                 channel.close()

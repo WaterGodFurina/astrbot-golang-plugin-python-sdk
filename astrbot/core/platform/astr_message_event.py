@@ -104,8 +104,8 @@ class AstrMessageEvent(abc.ABC):
         if isinstance(value, str):
             try:
                 self.session = MessageSession.from_str(value)
-            except BaseException:
-                pass
+            except Exception as e:
+                logger.warning(f"unified_msg_origin 解析失败: {e}")
 
     @property
     def session_id(self) -> str:

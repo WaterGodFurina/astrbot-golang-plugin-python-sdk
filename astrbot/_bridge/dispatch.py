@@ -6,6 +6,7 @@ import json
 import logging
 import threading
 import time
+from functools import lru_cache
 
 from astrbot._bridge import loop
 from astrbot._bridge.gen import plugin_pb2, plugin_pb2_grpc
@@ -183,8 +184,10 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
     def mark_instanced(self) -> None:
         self.lifecycle.mark_instanced()
 
-    def _wait_instanced(self) -> None:
-        self.lifecycle._wait_instanced()
+    def _wait_instanced(self) -> bool:
+        from astrbot._bridge.loader import INIT_TIMEOUT
+
+        return self.lifecycle._wait_instanced(timeout=INIT_TIMEOUT + 5)
 
     # ---- 注册收集 ----
     def _load_config_schema(self) -> dict:
@@ -295,12 +298,22 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                 for ef in f.handler_md.event_filters:
                     if isinstance(ef, PermissionTypeFilter) and ef.permission_type == PermissionType.ADMIN:
                         perm = "admin"
+            # 父子关系上报：f 恒为 CommandFilter（build_registry 只收
+            # CommandFilter，指令组本身不会进入 self.commands）。CommandFilter
+            # 上没有 parent_group 引用，用 parent_command_names（父指令组的
+            # 完整命令名列表，顶层为 [""]）推导：首个非空完整名的最后一段即
+            # 直属父组名（嵌套组如 ["outer inner"] → "inner"）。
+            parents = getattr(f, "parent_command_names", None) or []
+            first_parent = parents[0].strip() if parents else ""
+            parent_group = first_parent.split()[-1] if first_parent else ""
             resp.commands.append(
                 plugin_pb2.CommandDesc(
                     name=cmd_name,
                     aliases=list(f.alias) if f.alias else [],
                     description=desc,
                     permission=perm,
+                    parent_group=parent_group,
+                    is_sub_command=bool(parent_group),
                 )
             )
         for name, _, _ in self.filter_handlers:
@@ -336,7 +349,9 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         return None, None
 
     def HandleCommand(self, request, context) -> plugin_pb2.HandleCommandResponse:
-        self._wait_instanced()
+        if not self._wait_instanced():
+            logger.warning("HandleCommand: 插件实例尚未就绪，跳过命令处理")
+            return plugin_pb2.HandleCommandResponse()
         f, handler = self._find_command(request.name)
         resp = plugin_pb2.HandleCommandResponse()
         if f is None or handler is None:
@@ -397,7 +412,9 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         return resp
 
     def HandleFilter(self, request, context) -> plugin_pb2.HandleFilterResponse:
-        self._wait_instanced()
+        if not self._wait_instanced():
+            logger.warning("HandleFilter: 插件实例尚未就绪，跳过过滤器")
+            return plugin_pb2.HandleFilterResponse(allow=True)
         try:
             event_data = json.loads(request.event_json) if request.event_json else {}
         except json.JSONDecodeError as e:
@@ -488,7 +505,9 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         return plugin_pb2.GetConfigSchemaResponse(schema_json=b"")
 
     def HandleHook(self, request, context) -> plugin_pb2.HookResponse:
-        self._wait_instanced()
+        if not self._wait_instanced():
+            logger.warning("HandleHook: 插件实例尚未就绪，跳过钩子分发")
+            return plugin_pb2.HookResponse(handled=False)
         resp = plugin_pb2.HookResponse(handled=False)
         # aiocqhttp 桥接钩子：把宿主推来的原始 OneBot 事件分发给 @bot.on_message
         # 等装饰器（该钩子无插件 handler，转发后直接返回）。
@@ -556,8 +575,16 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                     logger.error(f"HandleHook {request.name}: chain_json 解析失败: {e}")
                     chain = []
             from astrbot._bridge.serialize import component_from_json
+            from astrbot.core.message.components import Unknown
 
-            comps = [component_from_json(c) for c in chain]
+            # 逐个反序列化兜底：单个畸形组件不拖垮整条 chain
+            comps = []
+            for c in chain:
+                try:
+                    comps.append(component_from_json(c))
+                except Exception as e:
+                    logger.warning(f"HandleHook {request.name}: 组件反序列化失败，回退 Unknown: {e}")
+                    comps.append(Unknown(text=""))
             result = MessageEventResult(comps)
             bound = _bind(handler, self.inst)
             try:
@@ -631,7 +658,9 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         return resp
 
     def HandleLLMRequest(self, request, context) -> plugin_pb2.HandleLLMRequestResponse:
-        self._wait_instanced()
+        if not self._wait_instanced():
+            logger.warning("HandleLLMRequest: 插件实例尚未就绪，跳过 LLM 请求钩子")
+            return plugin_pb2.HandleLLMRequestResponse(system_prompt=request.system_prompt)
         resp = plugin_pb2.HandleLLMRequestResponse(system_prompt=request.system_prompt)
         entry = self.hook_handlers.get(request.name)
         if entry is None:
@@ -665,7 +694,9 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         return resp
 
     def HandleTool(self, request, context) -> plugin_pb2.HandleToolResponse:
-        self._wait_instanced()
+        if not self._wait_instanced():
+            logger.warning("HandleTool: 插件实例尚未就绪，跳过工具调用")
+            return plugin_pb2.HandleToolResponse(text="插件未就绪", is_error=True)
         entry = self.tools.get(request.name)
         if entry is None:
             # self.tools 是 Register 时（registry_build 阶段）的快照，而插件
@@ -810,12 +841,16 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                 logger.debug(traceback.format_exc())
                 return plugin_pb2.HandleWebRequestResponse(
                     status_code=500,
-                    body=json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False).encode(),
+                    body=json.dumps(
+                        {"status": "error", "message": "internal plugin error"},
+                        ensure_ascii=False,
+                    ).encode(),
                 )
             return self._serialize_web_result(result)
         return plugin_pb2.HandleWebRequestResponse(status_code=404)
 
     @staticmethod
+    @lru_cache(maxsize=64)
     def _web_route_pattern(route: str):
         import re as _re
 

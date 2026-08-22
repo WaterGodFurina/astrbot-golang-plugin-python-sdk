@@ -9,6 +9,7 @@ session/umo/global/自定义）。Go 宿主没有对应的 DB 表给 Python 子�
 import asyncio
 import json
 import os
+import tempfile
 import threading
 from collections import defaultdict
 from copy import deepcopy
@@ -71,7 +72,10 @@ class SharedPreferences:
         self.path = os.path.join(get_astrbot_data_path(), "shared_preferences.json")
         self._cache: dict[tuple[str, str, str], Any] = {}
         self._cache_initialized = False
-        self._io_lock = asyncio.Lock()
+        # 写盘串行化由模块级 threading._lock 在 *_sync 路径内保证；这里不再
+        # 使用 asyncio.Lock——它绑定首次使用的事件循环，cron 降级调度器为每个
+        # async 任务新建循环时跨循环 acquire 会抛
+        # "bound to a different event loop"。
         # 临时缓存：简单 dict，仅供插件进程内短时记忆使用；每 24 小时由
         # 后台线程自动清空（对齐原版 temporary_cache 的定时清理调度）。
         self.temporary_cache: dict[str, dict] = defaultdict(dict)
@@ -114,10 +118,19 @@ class SharedPreferences:
 
     def _save(self, data: dict) -> None:
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
-        tmp = self.path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, self.path)
+        # mkstemp 唯一临时文件 + os.replace 原子提交：避免并发写同一
+        # tmp 文件交错后提交损坏 JSON（下次 _load 静默清空全部偏好）
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(self.path) or ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, self.path)
+        except Exception:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
 
     def _ensure_cache(self) -> None:
         with _lock:
@@ -146,7 +159,8 @@ class SharedPreferences:
                 }
                 for k, v in self._cache.items()
             }
-        self._save(raw)
+            # 锁内落盘：避免并发 _save 交错写同一 tmp 文件
+            self._save(raw)
 
     async def get_async(self, scope: str, scope_id: str, key: str, default: _VT = None) -> _VT:
         with _lock:
@@ -178,28 +192,36 @@ class SharedPreferences:
             for s, sid, k, v in values
         ]
 
+    def _put_sync(self, scope: str, scope_id: str, key: str, value: Any) -> None:
+        with _lock:
+            self._ensure_cache()
+            self._cache[(scope, scope_id, key)] = deepcopy(value)
+            self._persist()
+
     async def put_async(self, scope: str, scope_id: str, key: str, value: Any) -> None:
-        async with self._io_lock:
-            with _lock:
-                self._ensure_cache()
-                self._cache[(scope, scope_id, key)] = deepcopy(value)
-                self._persist()
+        # 落盘（含 JSON 序列化）在子线程执行，避免阻塞事件循环；写路径的
+        # 串行化由 _put_sync 内的模块级 threading 锁保证。
+        await asyncio.to_thread(self._put_sync, scope, scope_id, key, value)
+
+    def _remove_sync(self, scope: str, scope_id: str, key: str) -> None:
+        with _lock:
+            self._ensure_cache()
+            self._cache.pop((scope, scope_id, key), None)
+            self._persist()
 
     async def remove_async(self, scope: str, scope_id: str, key: str) -> None:
-        async with self._io_lock:
-            with _lock:
-                self._ensure_cache()
-                self._cache.pop((scope, scope_id, key), None)
-                self._persist()
+        await asyncio.to_thread(self._remove_sync, scope, scope_id, key)
+
+    def _clear_sync(self, scope: str, scope_id: str) -> None:
+        with _lock:
+            self._ensure_cache()
+            keys = [k for k in self._cache if k[0] == scope and k[1] == scope_id]
+            for k in keys:
+                self._cache.pop(k, None)
+            self._persist()
 
     async def clear_async(self, scope: str, scope_id: str) -> None:
-        async with self._io_lock:
-            with _lock:
-                self._ensure_cache()
-                keys = [k for k in self._cache if k[0] == scope and k[1] == scope_id]
-                for k in keys:
-                    self._cache.pop(k, None)
-                self._persist()
+        await asyncio.to_thread(self._clear_sync, scope, scope_id)
 
     @overload
     async def session_get(
@@ -325,24 +347,20 @@ class SharedPreferences:
         version="4.0.0",
     )
     def put(self, key, value, scope: str | None = None, scope_id: str | None = None) -> None:
-        asyncio.get_event_loop().run_until_complete(
-            self.put_async(scope or "unknown", scope_id or "unknown", key, value)
-        )
+        # 直接同步落盘（_put_sync 线程安全），避免在运行中的事件循环内
+        # run_until_complete 再次进入事件循环报错
+        self._put_sync(scope or "unknown", scope_id or "unknown", key, value)
 
     @deprecated(
         reason="Use remove_async() instead. Plugins: use PluginKVStoreMixin.delete_kv_data().",
         version="4.0.0",
     )
     def remove(self, key, scope: str | None = None, scope_id: str | None = None) -> None:
-        asyncio.get_event_loop().run_until_complete(
-            self.remove_async(scope or "unknown", scope_id or "unknown", key)
-        )
+        self._remove_sync(scope or "unknown", scope_id or "unknown", key)
 
     @deprecated(reason="Use clear_async() instead.", version="4.0.0")
     def clear(self, scope: str | None = None, scope_id: str | None = None) -> None:
-        asyncio.get_event_loop().run_until_complete(
-            self.clear_async(scope or "unknown", scope_id or "unknown")
-        )
+        self._clear_sync(scope or "unknown", scope_id or "unknown")
 
 
 sp = SharedPreferences()

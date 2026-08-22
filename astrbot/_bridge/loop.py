@@ -6,6 +6,7 @@ event loop（grpc-python 的 RPC 线程池无法承载）。
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import threading
 
@@ -43,7 +44,7 @@ def run_coro(coro, timeout: float = 30.0):
     future = asyncio.run_coroutine_threadsafe(coro, loop)
     try:
         return future.result(timeout=timeout)
-    except TimeoutError:
+    except concurrent.futures.TimeoutError:  # 3.10 上与内建 TimeoutError 不同类
         future.cancel()
         raise
 

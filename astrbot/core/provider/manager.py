@@ -257,7 +257,17 @@ class ProviderManager:
             "speech_to_text",
         ):
             raise ValueError(f"不支持的提供商类型: {capability}")
-        if provider_id not in self.inst_map:
+        # 用异步 RPC 拉取列表，避免 inst_map 同步 gRPC（最长 30s）阻塞事件循环
+        try:
+            insts = await self._bridge().list_providers_async()
+        except Exception as e:
+            logger.warning(f"list_providers 失败: {e}")
+            insts = []
+        if provider_id not in {
+            str(item.get("id") or item.get("meta_id") or "")
+            for item in insts
+            if isinstance(item, dict)
+        }:
             raise ValueError(
                 f"Provider {provider_id} does not exist and cannot be set."
             )

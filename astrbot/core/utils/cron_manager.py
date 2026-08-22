@@ -33,6 +33,7 @@ class _MinimalScheduler:
         self._running = False
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self._auto_seq = 0
 
     @property
     def running(self) -> bool:
@@ -85,8 +86,11 @@ class _MinimalScheduler:
         **kwargs,
     ):
         """登记一个定时任务（返回 job 占位 dict，对齐 apscheduler 风格）。"""
-        job_id = id or f"job_{len(self._jobs)}"
         with self._lock:
+            # 自增序列生成 ID：避免按 len(_jobs) 生成导致任务删除后
+            # ID 冲突（新旧任务同名覆盖）
+            self._auto_seq += 1
+            job_id = id or f"job_{self._auto_seq}"
             if job_id in self._jobs and not replace_existing:
                 return self._jobs[job_id]
             parsed = self._parse_trigger(trigger)

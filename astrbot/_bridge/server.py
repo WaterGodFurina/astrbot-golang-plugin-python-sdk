@@ -98,7 +98,7 @@ def main() -> int:
 
         event_loop.start()
 
-        from astrbot._bridge.host import HostBridge
+        from astrbot._bridge.host import HostBridge, set_bridge
         from astrbot.core.star.context import set_host_bridge
 
         bridge = HostBridge()
@@ -121,6 +121,10 @@ def main() -> int:
         from astrbot._bridge.gen import goplugin_pb2_grpc, plugin_pb2_grpc
 
         servicer = PluginServiceServicer(plugin_dirname, "", "", "", plugin_dir)
+        # 复用 servicer 的状态机（避免 server 侧与 dispatch 侧两套互不相通的
+        # 状态机）；先把当前状态（BRIDGE_READY）平移过去，后续推进统一生效。
+        servicer.lifecycle.set(lifecycle.state())
+        lifecycle = servicer.lifecycle
         server = grpc.server(
             ThreadPoolExecutor(max_workers=16),
             options=[
@@ -196,6 +200,9 @@ def main() -> int:
         # 插件加载完成后用注册名更新宿主桥身份（GetConfig 等 RPC 参数用）。
         bridge.plugin_name = plugin_name
         bridge.plugin_id = metadata.plugin_id
+        # 注册模块级单例：botpy/telegram 兼容层经 get_bridge() 取同一实例，
+        # 否则 plugin_name 恒空导致桥接钩子注册失败。
+        set_bridge(bridge)
 
         # 放行 Register（可能已等在 REGISTERING 上）；宿主 Register 完成后会
         # 绑定 HostService 身份，状态推进到 REGISTERED。

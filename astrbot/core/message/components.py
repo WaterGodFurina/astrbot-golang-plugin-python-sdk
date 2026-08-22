@@ -112,6 +112,19 @@ def _download_to_temp(url: str, suffix: str = "") -> str:
         raise
 
 
+def _download_sync(url: str, suffix: str = "") -> str:
+    """同步下载封装：事件循环运行时切到线程池执行，避免
+    opener.open(timeout=30) 冻结事件循环；无运行中循环时直接下载。"""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return _download_to_temp(url, suffix)
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+        return ex.submit(_download_to_temp, url, suffix).result()
+
+
 class MediaResolver:
     """简化版媒体解析：http(s) 下载到临时目录，本地路径原样返回。"""
 
@@ -134,7 +147,8 @@ class MediaResolver:
                 return self._write_base64(m.group(1), suffix)
         if source.startswith("http://") or source.startswith("https://"):
             suffix = self.default_suffix or ".bin"
-            return _download_to_temp(source, suffix)
+            # http(s) 源下载在子线程执行，避免 opener.open(timeout=30) 阻塞事件循环
+            return await asyncio.to_thread(_download_to_temp, source, suffix)
         if is_file_uri(source):
             return file_uri_to_path(source)
         return source
@@ -428,15 +442,10 @@ class Video(BaseMessageComponent):
 
         Go 宿主运行时无文件服务，降级为兼容实现：http 源直接透传，其余原样返回 file 字段。
         """
-        url_or_path = self.file or ""
-        if url_or_path.startswith("http://") or url_or_path.startswith("https://"):
-            payload_file = url_or_path
-        else:
-            payload_file = url_or_path
         return {
             "type": "video",
             "data": {
-                "file": payload_file,
+                "file": self.file or "",
             },
         }
 
@@ -747,12 +756,12 @@ class File(BaseMessageComponent):
                 self._file_cache = os.path.abspath(path)
                 return self._file_cache
             if self.file_.startswith("http"):
-                self._file_cache = _download_to_temp(self.file_)
+                self._file_cache = _download_sync(self.file_)
                 return self._file_cache
             self._file_cache = os.path.abspath(path)
             return self._file_cache
         if self.url and (self.url.startswith("http://") or self.url.startswith("https://")):
-            self._file_cache = _download_to_temp(self.url)
+            self._file_cache = _download_sync(self.url)
             return self._file_cache
         return self.file_ or self.url or ""
 
@@ -787,7 +796,7 @@ class File(BaseMessageComponent):
             if is_file_uri(self.url):
                 return file_uri_to_path(self.url)
             if self.url.startswith("http://") or self.url.startswith("https://"):
-                self.file_ = _download_to_temp(self.url)
+                self.file_ = await asyncio.to_thread(_download_to_temp, self.url)
                 return os.path.abspath(self.file_)
 
         return self.file_ or self.url or ""

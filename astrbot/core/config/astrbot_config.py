@@ -5,9 +5,14 @@ import asyncio
 import json
 import logging
 import os
+import tempfile
+import threading
 from typing import Any
 
 logger = logging.getLogger("astrbot")
+
+# 配置文件读-改-写互斥锁（put_config/update_config 并发写同一文件时保护）
+_config_io_lock = threading.Lock()
 
 # 宿主桥回退绑定（Context.get_config 创建实例时优先绑定实例属性，
 # 插件自行构造 AstrBotConfig 时经 bind_host 回退到模块级引用）。
@@ -25,6 +30,22 @@ def bind_host(bridge, plugin_name: str = "") -> None:
 def get_astrbot_data_path() -> str:
     """返回 AstrBot 数据目录（由宿主注入 ASTRBOT_DATA_PATH，缺省为 cwd）。"""
     return os.environ.get("ASTRBOT_DATA_PATH", os.getcwd())
+
+
+def _atomic_write_json(path: str, data: dict) -> None:
+    """mkstemp 唯一临时文件 + os.replace 原子写配置（避免并发写交错损坏 JSON）。"""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8-sig") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.flush()
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 class AstrBotConfig(dict):
@@ -134,24 +155,22 @@ class AstrBotConfig(dict):
         config_dir = os.path.join(get_astrbot_data_path(), "config")
         os.makedirs(config_dir, exist_ok=True)
         path = os.path.join(config_dir, f"{namespace}.json")
-        if not os.path.exists(path):
-            with open(path, "w", encoding="utf-8-sig") as f:
-                f.write("{}")
-        with open(path, encoding="utf-8-sig") as f:
-            d = json.load(f)
-        assert isinstance(d, dict)
-        if key not in d:
-            d[key] = {
-                "config_type": "item",
-                "name": name,
-                "description": description,
-                "path": key,
-                "value": value,
-                "val_type": type(value).__name__,
-            }
-            with open(path, "w", encoding="utf-8-sig") as f:
-                json.dump(d, f, indent=2, ensure_ascii=False)
-                f.flush()
+        with _config_io_lock:
+            if not os.path.exists(path):
+                _atomic_write_json(path, {})
+            with open(path, encoding="utf-8-sig") as f:
+                d = json.load(f)
+            assert isinstance(d, dict)
+            if key not in d:
+                d[key] = {
+                    "config_type": "item",
+                    "name": name,
+                    "description": description,
+                    "path": key,
+                    "value": value,
+                    "val_type": type(value).__name__,
+                }
+                _atomic_write_json(path, d)
 
     @staticmethod
     def update_config(namespace: str, key: str, value) -> None:
@@ -159,15 +178,14 @@ class AstrBotConfig(dict):
         path = os.path.join(get_astrbot_data_path(), "config", f"{namespace}.json")
         if not os.path.exists(path):
             raise FileNotFoundError(f"配置文件 {namespace}.json 不存在。")
-        with open(path, encoding="utf-8-sig") as f:
-            d = json.load(f)
-        assert isinstance(d, dict)
-        if key not in d:
-            raise KeyError(f"配置项 {key} 不存在。")
-        d[key]["value"] = value
-        with open(path, "w", encoding="utf-8-sig") as f:
-            json.dump(d, f, indent=2, ensure_ascii=False)
-            f.flush()
+        with _config_io_lock:
+            with open(path, encoding="utf-8-sig") as f:
+                d = json.load(f)
+            assert isinstance(d, dict)
+            if key not in d:
+                raise KeyError(f"配置项 {key} 不存在。")
+            d[key]["value"] = value
+            _atomic_write_json(path, d)
 
     # ── 写回宿主（对齐本体 save_config / save_config_async）──────────────
     def _bridge_and_plugin(self) -> tuple[Any, str]:

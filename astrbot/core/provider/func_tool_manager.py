@@ -442,10 +442,11 @@ class MCPTool(FunctionTool):
 
 
 class _PermissionGuardedTool(FunctionTool):
-    """工具权限守卫（占位降级：直接透传被包装工具的执行逻辑）。
+    """工具权限守卫：call() 前按工具名查宿主 tool_permissions 配置校验。
 
-    原版在调用前做 per-tool 权限检查（_check_tool_permission），SDK 简化
-    为透传，不检查权限。
+    宿主桥无专用工具权限 RPC，这里经 get_config_async 读取插件配置中的
+    tool_permissions（仪表盘可配置 admin-only 工具）；配置缺失或查询
+    失败时放行（保持原透传行为）。
     """
 
     def __init__(self, tool: Any, manager: Any) -> None:
@@ -458,8 +459,34 @@ class _PermissionGuardedTool(FunctionTool):
         self._mgr = manager
         self.active = getattr(tool, "active", True)
 
+    async def _check_tool_permission(self, context: Any) -> bool:
+        """按工具名查宿主 tool_permissions 配置校验，未配置/查询失败放行。"""
+        try:
+            from astrbot._bridge.host import get_bridge
+
+            bridge = get_bridge()
+            cfg = await bridge.get_config_async(bridge.plugin_name or "")
+        except Exception as e:
+            logger.debug(f"tool permission 查询失败，放行: {e}")
+            return True
+        permissions = (cfg or {}).get("tool_permissions") or {}
+        level = permissions.get(self.name)
+        if isinstance(level, dict):
+            level = level.get("permission")
+        if not level:
+            return True
+        from astrbot.core.star.filter.permission import PermissionType, PermissionTypeFilter
+
+        flag = getattr(PermissionType, str(level).upper(), None)
+        if flag is None:
+            return True
+        return PermissionTypeFilter(flag).filter(context, None)
+
     async def call(self, context: Any, **kwargs: Any) -> Any:
-        """透传执行被包装工具（优先 handler，其次覆写的 call）。"""
+        """先校验权限（无权限返回错误结果），再透传执行被包装工具。"""
+        if not await self._check_tool_permission(context):
+            logger.warning(f"工具 {self.name} 无权限调用，拒绝执行")
+            return f"error: 工具 {self.name} 无权限调用"
         call_override = getattr(type(self._wrapped), "call", None)
         if call_override is not None and call_override is not FunctionTool.call:
             return await call_override(self._wrapped, context, **kwargs)

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -164,11 +165,22 @@ class PlatformMessageHistoryManager:
         return data
 
     def _save(self) -> None:
-        """将内存缓存整体写回 JSON 文件。"""
+        """将内存缓存整体写回 JSON 文件（mkstemp + os.replace 原子写）。"""
         if self._cache is None:
             return
-        with open(_history_path(), "w", encoding="utf-8") as f:
-            json.dump(self._cache, f, ensure_ascii=False, indent=2)
+        fd, tmp = tempfile.mkstemp(
+            dir=os.path.dirname(_history_path()) or ".", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(self._cache, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, _history_path())
+        except Exception:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
 
     def _key(self, platform_id: str, user_id: str) -> str:
         """生成存储键：platform_id|user_id。"""
@@ -206,18 +218,20 @@ class PlatformMessageHistoryManager:
         except (TypeError, ValueError):
             content = str(content)
 
-        record = PlatformMessageHistory(
-            id=self._next_id,
-            platform_id=str(platform_id),
-            user_id=str(user_id),
-            content=content,
-            sender_id=sender_id,
-            sender_name=sender_name,
-            llm_checkpoint_id=llm_checkpoint_id,
-            created_at=datetime.now(timezone.utc),
-        )
         key = self._key(str(platform_id), str(user_id))
+        # 记录的构造（含 _next_id 读取与自增）必须在锁内：并发 insert 时
+        # 避免两个协程读到同一 _next_id 构造出重复 ID
         with self._lock:
+            record = PlatformMessageHistory(
+                id=self._next_id,
+                platform_id=str(platform_id),
+                user_id=str(user_id),
+                content=content,
+                sender_id=sender_id,
+                sender_name=sender_name,
+                llm_checkpoint_id=llm_checkpoint_id,
+                created_at=datetime.now(timezone.utc),
+            )
             data = self._load()
             records = data.setdefault(key, [])
             records.append(record.to_dict())

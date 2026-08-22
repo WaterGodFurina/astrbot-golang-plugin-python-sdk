@@ -38,8 +38,12 @@ def component_from_json(data: dict) -> BaseMessageComponent:
     if ctype == "AtAll":
         return AtAll()
     if ctype == "Image":
+        b64 = data.get("base64")
+        file_ = data.get("file") or None
+        if not file_ and b64 and not data.get("url") and not data.get("path"):
+            file_ = f"base64://{b64}"
         return Image(
-            file=data.get("file") or None,
+            file=file_,
             url=data.get("url") or None,
             path=data.get("path") or None,
         )
@@ -79,7 +83,12 @@ def component_from_json(data: dict) -> BaseMessageComponent:
     if ctype == "Reply":
         return Reply(id=data.get("id", ""), message_str=data.get("text", ""))
     if ctype == "Node":
-        return Node(content=[], uin=data.get("uin", "0"), name=data.get("name", ""))
+        # 还原转发子链（component_to_json 的对称结构：data.content）
+        content = [
+            component_from_json(c)
+            for c in (data.get("data") or {}).get("content") or []
+        ]
+        return Node(content=content, uin=data.get("uin", "0"), name=data.get("name", ""))
     comp = Unknown(text=text)
     comp.raw = data
     return comp

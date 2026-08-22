@@ -90,9 +90,9 @@ class HostBridge:
             self._probed = False
         get_broker().close(HOST_SERVICE_APP_ID)
 
-    def ensure_connected(self) -> bool:
+    def ensure_connected(self, attempts: int = PRECONNECT_ATTEMPTS) -> bool:
         """确保宿主桥已连接；未连接时同步 Dial（宿主 accept 可能晚于插件
-        启动，最多重试 PRECONNECT_ATTEMPTS 次）。插件加载期间
+        启动，最多重试 attempts 次）。插件加载期间
         （get_config 等）会调用本方法，不能一次失败就放弃。"""
         with self._lock:
             if self._stub is not None and self._probed:
@@ -101,7 +101,7 @@ class HostBridge:
         if self._stub is not None and self._probe_alive():
             return True
         self._teardown()
-        for i in range(PRECONNECT_ATTEMPTS):
+        for i in range(attempts):
             if self.connect():
                 return True
             import time
@@ -126,7 +126,7 @@ class HostBridge:
         name = plugin_name or self.plugin_name
         last_err: Exception | None = None
         for attempt in range(PRECONNECT_ATTEMPTS):
-            if not self.ensure_connected():
+            if not self.ensure_connected(attempts=1):
                 last_err = RuntimeError("宿主桥未连接")
             else:
                 try:
@@ -885,6 +885,14 @@ class HostBridge:
 
 
 _bridge: HostBridge | None = None
+
+
+def set_bridge(bridge: HostBridge) -> None:
+    """把当前生效的宿主桥实例注册为模块级单例（server.py 初始化 bridge 后
+    调用）。兼容层（botpy/telegram）经 get_bridge() 获取同一实例，否则
+    plugin_name 恒空导致桥接钩子注册失败。"""
+    global _bridge
+    _bridge = bridge
 
 
 def get_bridge() -> HostBridge:

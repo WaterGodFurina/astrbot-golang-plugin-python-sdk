@@ -198,6 +198,10 @@ message CommandDesc {
   string description = 3;
   string usage = 4;
   string permission = 5; // "everyone" | "admin"
+  // 父指令组名（顶层命令为空串）；is_sub_command=true 时有效。
+  // 新增字段，旧宿主/旧插件按 proto3 未知字段语义忽略。
+  string parent_group = 6;
+  bool is_sub_command = 7;
 }
 
 // FilterDesc describes an event filter the plugin registers.

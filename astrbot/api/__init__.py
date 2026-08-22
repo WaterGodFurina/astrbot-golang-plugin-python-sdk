@@ -141,7 +141,8 @@ class HtmlRenderer:
 
         try:
             png = await get_bridge().text_to_image_async(text)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"文本渲染图片失败: {e}")
             return None
         if not return_url:
             return png

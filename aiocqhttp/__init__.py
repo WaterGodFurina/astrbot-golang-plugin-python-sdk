@@ -310,13 +310,15 @@ class CQHttp:
                         if isinstance(seg, dict) and seg.get("type") == "text"
                     )
                 first = str(text).split(maxsplit=1)[0] if str(text).strip() else ""
-                for names, func in self._command_handlers:
+                # 迭代前拷贝：避免 on_message 等回调中增删 handler 导致迭代
+                # 中列表变化（RuntimeError: list changed size during iteration）
+                for names, func in list(self._command_handlers):
                     if first in names:
                         out.append(func)
         # on_event(event_name) 的 custom 事件：按事件名匹配（data["event"]
         # 元事件字段或 "post_type.detail_type" 点分名），未命中不调用。
         dotted = f"{post_type}.{data.get(post_type + '_type', '')}"
-        for name, func in self._handlers.get("custom", []):
+        for name, func in list(self._handlers.get("custom", [])):
             if name == data.get("event") or name == dotted or name == post_type:
                 out.append(func)
         return out
@@ -353,7 +355,7 @@ class CQHttp:
                 gid_int = _try_int(gid)
                 if gid_int is None:
                     # 非数字 group_id（畸形数据）→ 走 send_msg 兜底分支，
-                    # 避免 _to_int 抛 ValueError 导致插件侧崩溃无信息
+                    # 避免 int 转换抛 ValueError 导致插件侧崩溃无信息
                     return await self.call_api(
                         "send_msg",
                         message=message,
@@ -384,9 +386,13 @@ class CQHttp:
                     **kwargs,
                 )
         if isinstance(ctx, dict) and ("group_id" in ctx or "user_id" in ctx):
-            params = dict(ctx)
+            # 与 Event 分支一致：self_id 走 routing_params 单独传递，不从
+            # dict 原样透传（避免把事件字段带进 action 参数）。
+            params = {k: v for k, v in ctx.items() if k != "self_id"}
             params["message"] = message
             params.update(kwargs)
+            if routing_params:
+                params.update(routing_params)
             if "group_id" in params:
                 return await self.call_api("send_group_msg", **params)
             return await self.call_api("send_private_msg", **params)
@@ -498,11 +504,3 @@ def _try_int(value) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
-
-
-def _to_int(value, field: str) -> int:
-    """OneBot ID 字段（group_id/user_id）统一转 int：兼容 int/str，非法值报错。"""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        raise ValueError(f"非法 {field}: {value!r}") from None

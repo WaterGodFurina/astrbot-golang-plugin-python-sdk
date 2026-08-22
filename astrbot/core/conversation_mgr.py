@@ -208,18 +208,20 @@ class ConversationManager:
         await self._trigger_session_deleted(unified_msg_origin)
 
     async def get_curr_conversation_id(self, unified_msg_origin: str) -> str | None:
-        """获取会话当前的对话 ID。"""
-        ret = self.session_conversations.get(unified_msg_origin)
-        if not ret:
-            try:
-                ret = await self._bridge().get_curr_conversation_id_async(
-                    unified_msg_origin
-                )
-            except Exception as e:
-                logger.warning(f"get_curr_conversation_id 失败: {e}")
-                return None
-            if ret:
-                self.session_conversations[unified_msg_origin] = ret
+        """获取会话当前的对话 ID。
+
+        先问宿主桥（WebUI 重置、/reset、其他插件进程可能已切换会话），
+        失败才回退本地缓存。
+        """
+        try:
+            ret = await self._bridge().get_curr_conversation_id_async(unified_msg_origin)
+        except Exception as e:
+            logger.warning(f"get_curr_conversation_id 失败: {e}")
+            return self.session_conversations.get(unified_msg_origin) or None
+        if ret:
+            self.session_conversations[unified_msg_origin] = ret
+        else:
+            self.session_conversations.pop(unified_msg_origin, None)
         return ret or None
 
     async def get_conversation(
@@ -373,6 +375,8 @@ class ConversationManager:
                 temp_contexts = []
 
         contexts = [item for sublist in contexts_groups for item in sublist]
+        page = max(1, int(page or 1))
+        page_size = max(1, int(page_size or 10))
         paged = contexts[(page - 1) * page_size : page * page_size]
         total_pages = len(contexts) // page_size
         if len(contexts) % page_size != 0:

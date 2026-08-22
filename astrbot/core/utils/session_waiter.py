@@ -52,6 +52,8 @@ class SessionController:
         """上次保持(keep)开始时的超时时间"""
 
         self.history_chains: list[list[Comp.BaseMessageComponent]] = []
+        # 持有 _holding 任务引用，避免被 GC 回收（超时/取消后自动移除）
+        self._hold_tasks: set[asyncio.Task] = set()
 
     def stop(self, error: Exception | None = None) -> None:
         """立即结束这个会话"""
@@ -93,7 +95,9 @@ class SessionController:
         self.current_event = new_event
         self.timeout = timeout
 
-        asyncio.create_task(self._holding(new_event, timeout))  # 开始新的 keep
+        t = asyncio.create_task(self._holding(new_event, timeout))  # 开始新的 keep
+        self._hold_tasks.add(t)
+        t.add_done_callback(self._hold_tasks.discard)
 
     async def _holding(self, event: asyncio.Event, timeout: float) -> None:
         """等待事件结束或超时"""
@@ -207,8 +211,8 @@ class SessionWaiter:
             pass
         self.session_controller.stop(error)
         # 注销宿主侧等待（幂等：宿主超时已自动注销时不存在的 wait_id 静默；
-        # 注册失败 wait_id="" 时跳过）。_cleanup 是同步清理路径，注销经
-        # asyncio.to_thread 移出常驻 loop 异步执行，不阻塞清理。
+        # 注册失败 wait_id="" 时跳过）。_cleanup 是同步清理路径，注销以
+        # 任务方式异步执行，不阻塞清理。
         wait_id, self.wait_id = self.wait_id, ""
         if wait_id:
             try:
@@ -216,9 +220,21 @@ class SessionWaiter:
 
                 bridge = get_host_bridge()
                 if bridge is not None:
-                    asyncio.get_event_loop().create_task(
-                        bridge.unregister_session_wait_async(wait_id)
-                    )
+                    # _cleanup 是同步清理路径，可能不在事件循环线程执行：
+                    # get_event_loop/get_running_loop 取不到当前循环时跳过
+                    # 注销（仅告警，宿主侧超时 AfterFunc 会自动注销）。
+                    loop = None
+                    try:
+                        loop = asyncio.get_running_loop()
+                    except RuntimeError:
+                        loop = None
+                    if loop is None:
+                        try:
+                            loop = asyncio.get_event_loop()
+                        except RuntimeError:
+                            loop = None
+                    if loop is not None:
+                        loop.create_task(bridge.unregister_session_wait_async(wait_id))
             except Exception as e:
                 logger.debug(f"UnregisterSessionWait({wait_id}) 失败: {e}")
 
