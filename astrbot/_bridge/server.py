@@ -141,11 +141,13 @@ def main() -> int:
         if min_port and max_port:
             for port in range(min_port, max_port + 1):
                 try:
-                    bound_port = server.add_insecure_port(f"127.0.0.1:{port}")
-                    break
+                    bound = server.add_insecure_port(f"127.0.0.1:{port}")
                 except Exception:
                     continue
-            if bound_port is None:
+                if bound:  # grpc-python 绑定失败不抛异常，返回 0
+                    bound_port = bound
+                    break
+            if not bound_port:
                 raise RuntimeError(
                     f"无法在 PLUGIN_MIN_PORT={min_port}..PLUGIN_MAX_PORT={max_port} 范围内绑定端口"
                 )
@@ -191,6 +193,8 @@ def main() -> int:
         servicer.plugin_desc = plugin_desc
         servicer.plugin_author = plugin_author
         servicer.web_apis = list(getattr(context, "_web_apis", []))
+        # Register 快照仍随 Register RPC 上报（兼容旧宿主）；运行期新增的
+        # 路由经 ListWebApis RPC 实时拉取，宿主网关无需重启即可转发。
         context.plugin_name = plugin_name
         context.plugin_id = metadata.plugin_id
         try:

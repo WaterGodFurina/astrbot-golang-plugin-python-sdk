@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import concurrent.futures
 import enum
 import json
 import logging
@@ -112,6 +113,9 @@ def _download_to_temp(url: str, suffix: str = "") -> str:
         raise
 
 
+_DOWNLOAD_EXECUTOR: concurrent.futures.ThreadPoolExecutor | None = None
+
+
 def _download_sync(url: str, suffix: str = "") -> str:
     """同步下载封装：事件循环运行时切到线程池执行，避免
     opener.open(timeout=30) 冻结事件循环；无运行中循环时直接下载。"""
@@ -121,8 +125,16 @@ def _download_sync(url: str, suffix: str = "") -> str:
         return _download_to_temp(url, suffix)
     import concurrent.futures
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
-        return ex.submit(_download_to_temp, url, suffix).result()
+    logger.warning(
+        "File.file 在事件循环内触发了同步下载（最长阻塞 30s），"
+        "请改用 await file.get_file()"
+    )
+    global _DOWNLOAD_EXECUTOR
+    if _DOWNLOAD_EXECUTOR is None:
+        _DOWNLOAD_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+            max_workers=4, name_prefix="file-download"
+        )
+    return _DOWNLOAD_EXECUTOR.submit(_download_to_temp, url, suffix).result()
 
 
 class MediaResolver:
@@ -145,13 +157,22 @@ class MediaResolver:
             if m:
                 suffix = f".{target_format}" if target_format else ".bin"
                 return self._write_base64(m.group(1), suffix)
+            # 非 base64 的 data: URI 无法落盘：显式报错，避免下游拿到
+            # URI 字符串当文件路径用，在 open() 处才崩溃。
+            raise ValueError(
+                f"不支持的 data: URI（仅支持 data:*;base64,... 编码）: {source[:64]!r}"
+            )
         if source.startswith("http://") or source.startswith("https://"):
             suffix = self.default_suffix or ".bin"
             # http(s) 源下载在子线程执行，避免 opener.open(timeout=30) 阻塞事件循环
             return await asyncio.to_thread(_download_to_temp, source, suffix)
         if is_file_uri(source):
             return file_uri_to_path(source)
-        return source
+        if os.path.exists(source):
+            return source
+        # 不存在的本地路径原样返回会导致下游 open() 抛 FileNotFoundError，
+        # 错误离根因很远：此处显式报错。
+        raise ValueError(f"媒体源既非 URL/URI 也不是存在的本地文件: {source!r}")
 
     async def to_base64(self, target_format: str | None = None) -> str:
         path = await self.to_path(target_format)

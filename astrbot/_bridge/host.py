@@ -129,8 +129,19 @@ class HostBridge:
             if not self.ensure_connected(attempts=1):
                 last_err = RuntimeError("宿主桥未连接")
             else:
+                # ensure_connected 返回 True 后 _stub 可能在另一线程被
+                # _teardown 置空（宿主重启期间并发调用）：锁内取局部引用，
+                # 避免裸调 self._stub 抛 AttributeError 冲出重试循环。
+                with self._lock:
+                    stub = self._stub
+                if stub is None:
+                    last_err = RuntimeError("宿主桥连接已被并发重建")
+                    import time
+
+                    time.sleep(PRECONNECT_INTERVAL)
+                    continue
                 try:
-                    resp = self._stub.GetConfig(
+                    resp = stub.GetConfig(
                         plugin_pb2.GetConfigRequest(plugin_name=name),
                         timeout=30,
                     )
@@ -156,14 +167,18 @@ class HostBridge:
     def set_config(self, plugin_name: str, cfg: dict) -> bool:
         if not self.ensure_connected():
             return False
-        self._stub.SetConfig(
-            plugin_pb2.SetConfigRequest(
-                plugin_name=plugin_name or self.plugin_name,
-                config_json=json.dumps(cfg).encode(),
-            ),
-            timeout=30,
-        )
-        return True
+        try:
+            self._stub.SetConfig(
+                plugin_pb2.SetConfigRequest(
+                    plugin_name=plugin_name or self.plugin_name,
+                    config_json=json.dumps(cfg).encode(),
+                ),
+                timeout=30,
+            )
+            return True
+        except grpc.RpcError as e:
+            logger.warning(f"SetConfig 失败: {e}")
+            return False
 
     def chat_llm(
         self,
@@ -196,16 +211,20 @@ class HostBridge:
     def react(self, platform: str, session_id: str, message_id: str, emoji: str) -> bool:
         if not self.ensure_connected():
             return False
-        self._stub.React(
-            plugin_pb2.ReactRequest(
-                platform=platform,
-                session_id=session_id,
-                message_id=message_id,
-                emoji=emoji,
-            ),
-            timeout=30,
-        )
-        return True
+        try:
+            self._stub.React(
+                plugin_pb2.ReactRequest(
+                    platform=platform,
+                    session_id=session_id,
+                    message_id=message_id,
+                    emoji=emoji,
+                ),
+                timeout=30,
+            )
+            return True
+        except grpc.RpcError as e:
+            logger.warning(f"React 失败: {e}")
+            return False
 
     def text_to_image(self, text: str, template_name: str = "") -> bytes:
         """宿主 t2i 渲染文本为图片，返回 PNG 字节。"""
@@ -242,15 +261,19 @@ class HostBridge:
         if isinstance(session, str):
             session = MessageSession.from_str(session)
         chain_json = [component_to_json(c) for c in chain.chain]
-        self._stub.SendMessage(
-            plugin_pb2.SendMessageRequest(
-                platform=session.platform_id,
-                session_id=session.session_id,
-                chain_json=json.dumps(chain_json).encode(),
-            ),
-            timeout=30,
-        )
-        return True
+        try:
+            self._stub.SendMessage(
+                plugin_pb2.SendMessageRequest(
+                    platform=session.platform_id,
+                    session_id=session.session_id,
+                    chain_json=json.dumps(chain_json).encode(),
+                ),
+                timeout=30,
+            )
+            return True
+        except grpc.RpcError as e:
+            logger.warning(f"SendMessage 失败: {e}")
+            return False
 
     def call_action(self, platform: str, api: str, params: dict) -> dict:
         if not self.ensure_connected():
@@ -320,11 +343,15 @@ class HostBridge:
     def recall_message(self, platform: str, message_id: str) -> bool:
         if not self.ensure_connected():
             return False
-        self._stub.RecallMessage(
-            plugin_pb2.RecallMessageRequest(platform=platform, message_id=message_id),
-            timeout=30,
-        )
-        return True
+        try:
+            self._stub.RecallMessage(
+                plugin_pb2.RecallMessageRequest(platform=platform, message_id=message_id),
+                timeout=30,
+            )
+            return True
+        except grpc.RpcError as e:
+            logger.warning(f"RecallMessage 失败: {e}")
+            return False
 
     async def react_message(self, event, emoji: str) -> bool:
         """给事件消息添加表情回应（宿主 React RPC）。"""

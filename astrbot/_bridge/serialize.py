@@ -21,8 +21,13 @@ from astrbot.core.message.components import (
 from astrbot.core.message.message_event_result import MessageEventResult
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 
+# 跨进程序列化边界的递归上限：宿主推来的 event_json/chain_json 可能含
+# 自嵌套转发消息（数千层 Node），无限递归会抛 RecursionError（不在
+# JSONDecodeError 捕获范围内）导致 gRPC handler 以 UNKNOWN 失败。
+_MAX_NODE_DEPTH = 50
 
-def component_from_json(data: dict) -> BaseMessageComponent:
+
+def component_from_json(data: dict, _depth: int = 0) -> BaseMessageComponent:
     """把宿主 sdk.Component JSON 还原为 Python 组件对象。"""
     if not data:
         return Unknown(text="")
@@ -84,8 +89,10 @@ def component_from_json(data: dict) -> BaseMessageComponent:
         return Reply(id=data.get("id", ""), message_str=data.get("text", ""))
     if ctype == "Node":
         # 还原转发子链（component_to_json 的对称结构：data.content）
+        if _depth >= _MAX_NODE_DEPTH:
+            return Unknown(text="")
         content = [
-            component_from_json(c)
+            component_from_json(c, _depth + 1)
             for c in (data.get("data") or {}).get("content") or []
         ]
         return Node(content=content, uin=data.get("uin", "0"), name=data.get("name", ""))
@@ -94,7 +101,7 @@ def component_from_json(data: dict) -> BaseMessageComponent:
     return comp
 
 
-def component_to_json(comp: BaseMessageComponent) -> dict:
+def component_to_json(comp: BaseMessageComponent, _depth: int = 0) -> dict:
     """把 Python 组件对象转为宿主 sdk.Component JSON。"""
     ctype = str(getattr(comp, "type", "Unknown"))
     if isinstance(comp, Plain):
@@ -172,16 +179,22 @@ def component_to_json(comp: BaseMessageComponent) -> dict:
     if isinstance(comp, Forward):
         return {"type": "Forward", "id": str(getattr(comp, "id", ""))}
     if isinstance(comp, Node):
+        if _depth >= _MAX_NODE_DEPTH:
+            return {"type": "Unknown", "text": ""}
         return {
             "type": "Node",
             "uin": str(getattr(comp, "uin", "0")),
             "name": getattr(comp, "name", "") or "",
-            "data": {"content": [component_to_json(c) for c in (comp.content or [])]},
+            "data": {
+                "content": [component_to_json(c, _depth + 1) for c in (comp.content or [])]
+            },
         }
     if isinstance(comp, Nodes):
         return {
             "type": "Nodes",
-            "data": {"nodes": [component_to_json(n) for n in (comp.nodes or [])]},
+            "data": {
+                "nodes": [component_to_json(n, _depth + 1) for n in (comp.nodes or [])]
+            },
         }
     if isinstance(comp, Unknown):
         return {"type": "Unknown", "text": getattr(comp, "text", "")}

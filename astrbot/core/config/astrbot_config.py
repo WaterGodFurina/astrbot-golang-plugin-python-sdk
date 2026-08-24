@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 from typing import Any
@@ -130,8 +131,17 @@ class AstrBotConfig(dict):
         return super().get(key, default)
 
     @staticmethod
+    def _safe_namespace(namespace: str) -> str:
+        """校验 namespace 只含安全字符，防止路径穿越（../../somewhere/evil
+        可读任意 .json 或改写宿主 config/ 下的文件）。"""
+        if not namespace or not re.fullmatch(r"[A-Za-z0-9_\-]+", namespace):
+            raise ValueError(f"非法的配置 namespace: {namespace!r}")
+        return namespace
+
+    @staticmethod
     def load_config(namespace: str) -> dict | bool:
         """从配置文件加载配置（兼容旧 API）。"""
+        namespace = AstrBotConfig._safe_namespace(namespace)
         path = os.path.join(
             get_astrbot_data_path(), "config", f"{namespace}.json"
         )
@@ -150,8 +160,7 @@ class AstrBotConfig(dict):
     @staticmethod
     def put_config(namespace: str, name: str, key: str, value, description: str) -> None:
         """写入配置项（兼容旧 API）。"""
-        if namespace == "":
-            raise ValueError("namespace 不能为空。")
+        namespace = AstrBotConfig._safe_namespace(namespace)
         config_dir = os.path.join(get_astrbot_data_path(), "config")
         os.makedirs(config_dir, exist_ok=True)
         path = os.path.join(config_dir, f"{namespace}.json")
@@ -175,6 +184,7 @@ class AstrBotConfig(dict):
     @staticmethod
     def update_config(namespace: str, key: str, value) -> None:
         """更新配置项（兼容旧 API）。"""
+        namespace = AstrBotConfig._safe_namespace(namespace)
         path = os.path.join(get_astrbot_data_path(), "config", f"{namespace}.json")
         if not os.path.exists(path):
             raise FileNotFoundError(f"配置文件 {namespace}.json 不存在。")

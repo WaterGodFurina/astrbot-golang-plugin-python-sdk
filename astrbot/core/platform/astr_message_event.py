@@ -396,7 +396,7 @@ class AstrMessageEvent(abc.ABC):
     async def send(self, message: MessageChain) -> None:
         """发送消息到消息平台（经宿主 HostService.SendMessage）。
 
-        对齐 Python 本体语义：发送即标记 _has_send_oper——管线的 LLM 决策
+        对齐 Python 本体语义：发送成功才标记 _has_send_oper——管线的 LLM 决策
         （process_stage）依据该标记：handler/钩子主动发送过的事件不再继续
         走 LLM（否则 box 这类"主动发图回复"的插件命令会再生成一遍 LLM
         回复）。
@@ -407,14 +407,18 @@ class AstrMessageEvent(abc.ABC):
         if bridge is None:
             logger.warning("send(): 宿主桥未就绪，消息未发送")
             return
+        # send_message 是同步 RPC（grpc-python 阻塞调用），经 host.py 的
+        # send_message_async（asyncio.to_thread 包装）移出事件循环，避免
+        # 数百 ms 的 gRPC 往返冻结所有 async handler。
+        ok = await bridge.send_message_async(self.session, message)
+        if not ok:
+            # 发送失败不标记"已发送"，管线 LLM 兜底才能给用户回复
+            logger.warning("send(): 宿主发送消息失败，未标记已发送")
+            return
         self._has_send_oper = True
         asyncio.create_task(
             Metric.upload(msg_event_tick=1, adapter_name=self.platform_meta.name),
         )
-        # send_message 是同步 RPC（grpc-python 阻塞调用），经 host.py 的
-        # send_message_async（asyncio.to_thread 包装）移出事件循环，避免
-        # 数百 ms 的 gRPC 往返冻结所有 async handler。
-        await bridge.send_message_async(self.session, message)
 
     async def react(self, emoji: str) -> None:
         """对当前消息添加表情回应（宿主 PlatformManager.React，平台不支持时
@@ -543,6 +547,13 @@ class AstrMessageEvent(abc.ABC):
         event.is_at_or_wake_command = metadata.get("is_at_or_wake_command", False)
         event.is_wake = metadata.get("is_wake", False)
         event.call_llm = bool(metadata.get("call_llm", False))
-        event.role = "admin" if is_admin else "member"
+        # 宿主事件 JSON 有扩展角色字段（owner/群管理员等）时优先读取，否则
+        # 二值化为 admin/member（缺失 owner 维度会导致 @filter.permission_type
+        # (OWNER/GROUP_ADMIN) 权限位恒不匹配）。
+        raw_role = (metadata or {}).get("role") or data.get("sender_role")
+        if raw_role in ("admin", "owner", "member"):
+            event.role = raw_role
+        else:
+            event.role = "admin" if is_admin else "member"
         event.is_at_bot = is_at_bot
         return event

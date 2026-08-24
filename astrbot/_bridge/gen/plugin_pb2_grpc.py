@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-from . import plugin_pb2 as plugin__pb2
+import plugin_pb2 as plugin__pb2
 
 GRPC_GENERATED_VERSION = '1.83.0'
 GRPC_VERSION = grpc.__version__
@@ -72,6 +72,11 @@ class PluginServiceStub:
                 '/astrbot.sdk.v1.PluginService/ListTools',
                 request_serializer=plugin__pb2.Empty.SerializeToString,
                 response_deserializer=plugin__pb2.ListToolsResponse.FromString,
+                _registered_method=True)
+        self.ListWebApis = channel.unary_unary(
+                '/astrbot.sdk.v1.PluginService/ListWebApis',
+                request_serializer=plugin__pb2.Empty.SerializeToString,
+                response_deserializer=plugin__pb2.ListWebApisResponse.FromString,
                 _registered_method=True)
         self.HandleWebRequest = channel.unary_unary(
                 '/astrbot.sdk.v1.PluginService/HandleWebRequest',
@@ -166,6 +171,18 @@ class PluginServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListWebApis(self, request, context):
+        """ListWebApis returns the plugin's CURRENT Web API routes. Plugin routes may
+        be registered during instantiation (context.register_web_api in
+        __init__/initialize), after the Register snapshot — so the host pulls the
+        live route list through this RPC (aligned with ListTools). Old plugin
+        binaries without this RPC return UNIMPLEMENTED; the host falls back to the
+        Register snapshot.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def HandleWebRequest(self, request, context):
         """HandleWebRequest dispatches a dashboard HTTP request to a plugin-registered
         Web API (context.register_web_api / /api/plug/<path>).
@@ -255,6 +272,11 @@ def add_PluginServiceServicer_to_server(servicer, server):
                     servicer.ListTools,
                     request_deserializer=plugin__pb2.Empty.FromString,
                     response_serializer=plugin__pb2.ListToolsResponse.SerializeToString,
+            ),
+            'ListWebApis': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListWebApis,
+                    request_deserializer=plugin__pb2.Empty.FromString,
+                    response_serializer=plugin__pb2.ListWebApisResponse.SerializeToString,
             ),
             'HandleWebRequest': grpc.unary_unary_rpc_method_handler(
                     servicer.HandleWebRequest,
@@ -480,6 +502,33 @@ class PluginService:
             '/astrbot.sdk.v1.PluginService/ListTools',
             plugin__pb2.Empty.SerializeToString,
             plugin__pb2.ListToolsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListWebApis(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.PluginService/ListWebApis',
+            plugin__pb2.Empty.SerializeToString,
+            plugin__pb2.ListWebApisResponse.FromString,
             options,
             channel_credentials,
             insecure,

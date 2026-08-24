@@ -35,9 +35,13 @@ class ActiveEventRegistry:
         """注销一个活跃事件。"""
         umo = getattr(event, "unified_msg_origin", "")
         self._agent_stop_callbacks.pop(event, None)
-        self._events[umo].discard(event)
-        if umo and not self._events[umo]:
-            del self._events[umo]
+        # defaultdict 的 [] 访问会为未登记的 umo 创建空 set 并永久残留：
+        # 用 get 读桶，未登记时直接返回。
+        bucket = self._events.get(umo)
+        if bucket is not None:
+            bucket.discard(event)
+            if not bucket:
+                del self._events[umo]
 
     def register_agent_stop_callback(
         self,

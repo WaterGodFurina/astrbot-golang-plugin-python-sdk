@@ -336,6 +336,41 @@ def error_response(
     )
 
 
+def _check_and_read_file(path: Path) -> bytes:
+    """存在性与大小检查后读取文件（64MB 上限）。"""
+    if not path.is_file():
+        raise FileNotFoundError("请求的文件不存在或不可读")
+    if path.stat().st_size > 64 * 1024 * 1024:
+        raise ValueError("文件大小超过 64MB 上限，拒绝以 file_response 发送")
+    return path.read_bytes()
+
+
+def _file_response_headers(
+    path: Path,
+    filename: str | None,
+    content_type: str | None,
+    headers: dict[str, str] | None,
+) -> dict[str, str]:
+    """组装文件响应头（file_response / afile_response 共用）。"""
+    import mimetypes
+
+    merged = dict(headers or {})
+    if content_type is not None:
+        merged.setdefault("Content-Type", content_type)
+    else:
+        # 按扩展名推断媒体类型（与 starlette FileResponse 行为一致）
+        guessed, _ = mimetypes.guess_type(str(path))
+        merged.setdefault("Content-Type", guessed or "application/octet-stream")
+    if filename:
+        # 过滤 CRLF 与引号：防止注入 Content-Disposition 响应头
+        safe = filename.replace('"', "%22").replace("\r", "").replace("\n", "")
+        merged.setdefault(
+            "Content-Disposition",
+            f"attachment; filename=\"{safe}\"",
+        )
+    return merged
+
+
 def file_response(
     path: str | Path,
     *,
@@ -358,31 +393,35 @@ def file_response(
     Returns:
         携带文件内容的 PluginWebResponse
     """
-    import mimetypes
-
     path = Path(path)
     # 先做存在性与大小检查再读文件，避免超大文件整读进内存
-    if not path.is_file():
-        raise FileNotFoundError("请求的文件不存在或不可读")
-    if path.stat().st_size > 64 * 1024 * 1024:
-        raise ValueError("文件大小超过 64MB 上限，拒绝以 file_response 发送")
-    body = path.read_bytes()
+    body = _check_and_read_file(path)
+    return PluginWebResponse(
+        body,
+        status_code=200,
+        headers=_file_response_headers(path, filename, content_type, headers),
+    )
 
-    merged = dict(headers or {})
-    if content_type is not None:
-        merged.setdefault("Content-Type", content_type)
-    else:
-        # 按扩展名推断媒体类型（与 starlette FileResponse 行为一致）
-        guessed, _ = mimetypes.guess_type(str(path))
-        merged.setdefault("Content-Type", guessed or "application/octet-stream")
-    if filename:
-        # 过滤 CRLF 与引号：防止注入 Content-Disposition 响应头
-        safe = filename.replace('"', "%22").replace("\r", "").replace("\n", "")
-        merged.setdefault(
-            "Content-Disposition",
-            f"attachment; filename=\"{safe}\"",
-        )
-    return PluginWebResponse(body, status_code=200, headers=merged)
+
+async def afile_response(
+    path: str | Path,
+    *,
+    filename: str | None = None,
+    content_type: str | None = None,
+    headers: dict[str, str] | None = None,
+) -> PluginWebResponse:
+    """异步版 file_response：检查与读盘全部在子线程执行。
+
+    file_response 是同步函数，在 async Web handler（常驻 loop 线程）里
+    直接调用时 read_bytes 会冻结事件循环（机械盘/网络盘上可达秒级）。
+    """
+    path = Path(path)
+    body = await asyncio.to_thread(_check_and_read_file, path)
+    return PluginWebResponse(
+        body,
+        status_code=200,
+        headers=_file_response_headers(path, filename, content_type, headers),
+    )
 
 
 def stream_response(

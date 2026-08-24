@@ -10,6 +10,7 @@ PlatformMessageHistoryManager：insert / get / delete / update / delete_by_id，
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
@@ -186,6 +187,15 @@ class PlatformMessageHistoryManager:
         """生成存储键：platform_id|user_id。"""
         return f"{platform_id}|{user_id}"
 
+    @staticmethod
+    def _record_id(r: dict) -> int:
+        """安全读取记录 ID：外部工具写入的非数字 ID（"abc"/uuid）兜底为 -1，
+        避免 delete_by_id/update 的 int() 转换抛 ValueError 中断整批处理。"""
+        try:
+            return int(r.get("id", -1) or -1)
+        except (TypeError, ValueError):
+            return -1
+
     # ── 写接口 ──────────────────────────────────────────────────────────
     async def insert(
         self,
@@ -218,29 +228,34 @@ class PlatformMessageHistoryManager:
         except (TypeError, ValueError):
             content = str(content)
 
-        key = self._key(str(platform_id), str(user_id))
-        # 记录的构造（含 _next_id 读取与自增）必须在锁内：并发 insert 时
-        # 避免两个协程读到同一 _next_id 构造出重复 ID
-        with self._lock:
-            record = PlatformMessageHistory(
-                id=self._next_id,
-                platform_id=str(platform_id),
-                user_id=str(user_id),
-                content=content,
-                sender_id=sender_id,
-                sender_name=sender_name,
-                llm_checkpoint_id=llm_checkpoint_id,
-                created_at=datetime.now(timezone.utc),
-            )
-            data = self._load()
-            records = data.setdefault(key, [])
-            records.append(record.to_dict())
-            # 超过上限时丢弃最旧的记录
-            if max_messages and len(records) > max_messages:
-                del records[: len(records) - max_messages]
-            self._next_id += 1
-            self._save()
-        return record
+        def _insert_sync() -> PlatformMessageHistory:
+            key = self._key(str(platform_id), str(user_id))
+            # 记录的构造（含 _next_id 读取与自增）必须在锁内：并发 insert 时
+            # 避免两个调用读到同一 _next_id 构造出重复 ID
+            with self._lock:
+                record = PlatformMessageHistory(
+                    id=self._next_id,
+                    platform_id=str(platform_id),
+                    user_id=str(user_id),
+                    content=content,
+                    sender_id=sender_id,
+                    sender_name=sender_name,
+                    llm_checkpoint_id=llm_checkpoint_id,
+                    created_at=datetime.now(timezone.utc),
+                )
+                data = self._load()
+                records = data.setdefault(key, [])
+                records.append(record.to_dict())
+                # 超过上限时丢弃最旧的记录
+                if max_messages and len(records) > max_messages:
+                    del records[: len(records) - max_messages]
+                self._next_id += 1
+                self._save()
+            return record
+
+        # 锁 + 全量读写盘在子线程执行：历史文件接近上限时每次 insert 都是
+        # 全量序列化 + 全量写，不能在事件循环线程同步执行。
+        return await asyncio.to_thread(_insert_sync)
 
     # ── 读接口 ──────────────────────────────────────────────────────────
     async def get(
@@ -261,55 +276,68 @@ class PlatformMessageHistoryManager:
         Returns:
             分页后的记录列表（新记录在前）。
         """
-        key = self._key(str(platform_id), str(user_id))
-        with self._lock:
-            data = self._load()
-            records = list(data.get(key, []))
-        # 最新的记录在列表尾部，翻转后最新在前（对齐原版 get() 行为）
-        records.reverse()
-        page = max(1, int(page))
-        page_size = max(1, int(page_size))
-        start = (page - 1) * page_size
-        page_records = records[start : start + page_size]
-        return [PlatformMessageHistory.from_dict(r) for r in page_records]
+        def _get_sync() -> list[PlatformMessageHistory]:
+            key = self._key(str(platform_id), str(user_id))
+            with self._lock:
+                data = self._load()
+                records = list(data.get(key, []))
+            # 最新的记录在列表尾部，翻转后最新在前（对齐原版 get() 行为）
+            records.reverse()
+            page = max(1, int(page))
+            page_size = max(1, int(page_size))
+            start = (page - 1) * page_size
+            page_records = records[start : start + page_size]
+            return [PlatformMessageHistory.from_dict(r) for r in page_records]
+
+        return await asyncio.to_thread(_get_sync)
 
     async def delete(
         self, platform_id: str, user_id: str, offset_sec: int = 86400
     ) -> None:
         """删除指定会话中早于 offset_sec 秒的记录。"""
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=max(0, int(offset_sec)))
-        key = self._key(str(platform_id), str(user_id))
-        with self._lock:
-            data = self._load()
-            records = data.get(key, [])
-            kept = []
-            for r in records:
-                created_at = None
-                raw_ts = r.get("created_at")
-                if isinstance(raw_ts, str):
-                    try:
-                        created_at = datetime.fromisoformat(raw_ts)
-                    except ValueError:
-                        created_at = None
-                if created_at is None or created_at >= cutoff:
-                    kept.append(r)
-            if len(kept) != len(records):
-                data[key] = kept
-                self._save()
+
+        def _delete_sync() -> None:
+            key = self._key(str(platform_id), str(user_id))
+            with self._lock:
+                data = self._load()
+                records = data.get(key, [])
+                kept = []
+                for r in records:
+                    created_at = None
+                    raw_ts = r.get("created_at")
+                    if isinstance(raw_ts, str):
+                        try:
+                            created_at = datetime.fromisoformat(raw_ts)
+                        except ValueError:
+                            created_at = None
+                    if created_at is None or created_at >= cutoff:
+                        kept.append(r)
+                if len(kept) != len(records):
+                    data[key] = kept
+                    self._save()
+
+        await asyncio.to_thread(_delete_sync)
 
     async def delete_by_id(self, message_id: int) -> None:
         """按记录 ID 删除一条消息历史。"""
-        with self._lock:
-            data = self._load()
-            changed = False
-            for key in list(data.keys()):
-                records = data[key]
-                new_records = [r for r in records if int(r.get("id", -1) or -1) != message_id]
-                if len(new_records) != len(records):
-                    data[key] = new_records
-                    changed = True
-            if changed:
-                self._save()
+
+        def _delete_by_id_sync() -> None:
+            with self._lock:
+                data = self._load()
+                changed = False
+                for key in list(data.keys()):
+                    records = data[key]
+                    new_records = [
+                        r for r in records if self._record_id(r) != message_id
+                    ]
+                    if len(new_records) != len(records):
+                        data[key] = new_records
+                        changed = True
+                if changed:
+                    self._save()
+
+        await asyncio.to_thread(_delete_by_id_sync)
 
     async def update(
         self,
@@ -318,21 +346,29 @@ class PlatformMessageHistoryManager:
         llm_checkpoint_id: str | None = None,
     ) -> None:
         """更新一条消息历史记录的内容（content 为 None 表示不修改）。"""
-        with self._lock:
-            data = self._load()
-            for records in data.values():
-                for r in records:
-                    if int(r.get("id", -1) or -1) == message_id:
-                        if content is not None:
-                            r["content"] = content
-                        if llm_checkpoint_id is not None:
-                            r["llm_checkpoint_id"] = llm_checkpoint_id
-                        self._save()
-                        return
+
+        def _update_sync() -> None:
+            with self._lock:
+                data = self._load()
+                for records in data.values():
+                    for r in records:
+                        if self._record_id(r) == message_id:
+                            if content is not None:
+                                r["content"] = content
+                            if llm_checkpoint_id is not None:
+                                r["llm_checkpoint_id"] = llm_checkpoint_id
+                            self._save()
+                            return
+
+        await asyncio.to_thread(_update_sync)
 
     async def clear(self) -> None:
         """清空全部消息历史（插件卸载或重置时使用）。"""
-        with self._lock:
-            self._cache = {}
-            self._next_id = 1
-            self._save()
+
+        def _clear_sync() -> None:
+            with self._lock:
+                self._cache = {}
+                self._next_id = 1
+                self._save()
+
+        await asyncio.to_thread(_clear_sync)

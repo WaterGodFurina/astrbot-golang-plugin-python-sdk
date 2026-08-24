@@ -206,13 +206,32 @@ class _AutoStartSchedulerProxy:
                 self._inner.start()
                 logger.info("cron_manager 调度器已懒启动")
         except Exception as e:
+            # AsyncIOScheduler.start() 必须在事件循环线程调用；插件的
+            # schedule_jobs() 是同步代码，常在 __init__（gRPC/主线程，无运行
+            # 循环）里执行——失败后重置标记，允许在事件循环上下文中重试，
+            # 否则定时任务静默不触发。
+            self._start_attempted = False
             logger.warning(
-                f"cron_manager 调度器懒启动失败（任务已登记但不触发）: {e}"
+                f"cron_manager 调度器懒启动失败（将在事件循环上下文重试）: {e}"
             )
 
     def add_job(self, *args, **kwargs):
         """登记任务（触发懒启动），对齐 apscheduler 签名。"""
         self._ensure_started()
+        if not self._inner.running:
+            # 已在事件循环上下文内（async handler / loop 任务）：直接启动。
+            # 首次 add_job 若发生在无运行循环的线程，此处也顺带重试一次。
+            try:
+                try:
+                    asyncio.get_running_loop()
+                    in_loop = True
+                except RuntimeError:
+                    in_loop = False
+                if in_loop:
+                    self._start_attempted = True
+                    self._inner.start()
+            except Exception as e:
+                logger.debug(f"cron_manager 调度器启动重试失败: {e}")
         return self._inner.add_job(*args, **kwargs)
 
     def __getattr__(self, name):

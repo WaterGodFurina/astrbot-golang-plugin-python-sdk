@@ -371,8 +371,13 @@ class ConversationManager:
                     temp_contexts.append(f"Assistant: [函数调用] {tool_calls_str}")
                 else:
                     temp_contexts.append("Assistant: [未知的内容]")
-                contexts_groups.insert(0, temp_contexts)
+                contexts_groups.append(temp_contexts)
                 temp_contexts = []
+        if temp_contexts:
+            # 末尾残留的连续 user 消息（最新一条提问）也要计入
+            contexts_groups.append(temp_contexts)
+        # 时间正序（原实现 insert(0,...) 为 O(n²)）
+        contexts_groups.reverse()
 
         contexts = [item for sublist in contexts_groups for item in sublist]
         page = max(1, int(page or 1))

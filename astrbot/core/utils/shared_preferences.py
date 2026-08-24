@@ -151,7 +151,7 @@ class SharedPreferences:
     def _persist(self) -> None:
         with _lock:
             raw = {
-                json.dumps(k[0], ensure_ascii=False): {
+                json.dumps([k[0], k[1], k[2]], ensure_ascii=False): {
                     "scope": k[0],
                     "scope_id": k[1],
                     "key": k[2],
@@ -162,22 +162,24 @@ class SharedPreferences:
             # 锁内落盘：避免并发 _save 交错写同一 tmp 文件
             self._save(raw)
 
-    async def get_async(self, scope: str, scope_id: str, key: str, default: _VT = None) -> _VT:
+    def _get_sync(self, scope: str, scope_id: str, key: str, default: _VT = None) -> _VT:
         with _lock:
             self._ensure_cache()
             value = self._cache.get((scope, scope_id, key), _MISSING)
             return default if value is _MISSING else deepcopy(value)
 
-    async def range_get_async(
+    async def get_async(self, scope: str, scope_id: str, key: str, default: _VT = None) -> _VT:
+        # 读盘/持锁在子线程执行：首次 _ensure_cache 会同步解析整个
+        # shared_preferences.json，且与 put_async 的持锁落盘互斥，
+        # 不能阻塞事件循环。
+        return await asyncio.to_thread(self._get_sync, scope, scope_id, key, default)
+
+    def _range_get_sync(
         self,
         scope: str,
         scope_id: str | None = None,
         key: str | None = None,
     ) -> list[Preference]:
-        """按范围返回所有匹配条目（scope/scope_id/key 可为 None 表示不限）。
-
-        value 属性为 dict，实际值在 value["val"] 中（对齐原版语义）。
-        """
         with _lock:
             self._ensure_cache()
             values = [
@@ -191,6 +193,18 @@ class SharedPreferences:
             Preference(scope=s, scope_id=sid, key=k, value={"val": v})
             for s, sid, k, v in values
         ]
+
+    async def range_get_async(
+        self,
+        scope: str,
+        scope_id: str | None = None,
+        key: str | None = None,
+    ) -> list[Preference]:
+        """按范围返回所有匹配条目（scope/scope_id/key 可为 None 表示不限）。
+
+        value 属性为 dict，实际值在 value["val"] 中（对齐原版语义）。
+        """
+        return await asyncio.to_thread(self._range_get_sync, scope, scope_id, key)
 
     def _put_sync(self, scope: str, scope_id: str, key: str, value: Any) -> None:
         with _lock:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import logging
 import os
 import re
@@ -216,6 +217,30 @@ def load_plugin_import(plugin_dir: str, context: Context) -> StarMetadata | None
     return metadata
 
 
+def _accepts_config(cls) -> bool:
+    """预检 Star.__init__ 是否接受 config 参数（位置/关键字/或 **kwargs）。
+
+    替代异常文本匹配：__init__ 内部的 TypeError（如
+    "int() argument must be a string..."）也会含 "argument" 字样，文本匹配
+    会把真实初始化 bug 误判为"不收 config"并以错误状态重试。
+    """
+    try:
+        sig = inspect.signature(cls.__init__)
+        params = list(sig.parameters.values())[1:]
+        for p in params:
+            if p.name == "config" and p.kind in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            ):
+                return True
+            if p.kind is inspect.Parameter.VAR_KEYWORD:
+                return True
+        return False
+    except (TypeError, ValueError):
+        # 签名无法解析（动态构造的类等）：保守按"接受 config"处理
+        return True
+
+
 def instantiate_plugin(metadata: StarMetadata, context: Context) -> None:
     """阶段 B：实例化 Star 并执行 initialize()。必须在宿主 Register 完成
     （HostService 身份绑定）后调用，插件 __init__/get_config 才能通过
@@ -238,11 +263,12 @@ def instantiate_plugin(metadata: StarMetadata, context: Context) -> None:
     # 实例化：部分插件 __init__(self, context) 不收 config（ragecoop 等）。
     # 对齐 Python 本体 star_manager：先带 config 试，TypeError 回退无 config。
     try:
-        inst = star_cls(context, config)
+        if _accepts_config(star_cls):
+            inst = star_cls(context, config)
+        else:
+            inst = star_cls(context)
     except TypeError as e:
-        # 仅当异常确为参数问题（消息含 config/argument 关键字）才回退为
-        # 仅 context 实例化；__init__ 内部抛出的 TypeError（与参数无关）不应
-        # 被误判为"不收 config"，否则会以错误状态重试。
+        # 兜底：签名预检失败等极端情况下保留原文本匹配回退
         if (
             "config" not in str(e)
             and "positional argument" not in str(e)
@@ -271,10 +297,14 @@ def instantiate_plugin(metadata: StarMetadata, context: Context) -> None:
     if config is not None and not hasattr(inst, "config"):
         inst.config = config
 
-    # 生命周期 initialize()
+    # 生命周期 initialize()：按返回值分发——同步 initialize 直接调用，
+    # 协程才走 loop.run_coro（否则 run_coroutine_threadsafe 对非协程抛
+    # TypeError，插件生态存在定义同步 initialize() 的插件）。
     init = getattr(inst, "initialize", None)
     if init is not None:
-        loop.run_coro(init(), timeout=INIT_TIMEOUT)
+        result = init()
+        if inspect.iscoroutine(result):
+            loop.run_coro(result, timeout=INIT_TIMEOUT)
         logger.info(f"插件 {metadata.module.__name__} initialize() 完成")
 
 
@@ -305,7 +335,11 @@ def terminate_plugin(metadata: StarMetadata) -> None:
         if fn is None:
             continue
         try:
-            loop.run_coro(fn(), timeout=TERM_TIMEOUT)
+            # 同步 terminate 直接调用（run_coro 对非协程抛 TypeError，
+            # 会被吞成一行 warning 且清理逻辑完全不执行）
+            result = fn()
+            if inspect.iscoroutine(result):
+                loop.run_coro(result, timeout=TERM_TIMEOUT)
         except Exception as e:
             logger.warning(f"插件 {metadata.name} {name}() 失败: {e}")
         break

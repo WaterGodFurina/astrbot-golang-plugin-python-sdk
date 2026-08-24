@@ -18,8 +18,10 @@ session_filter.filter(event) 生成 session_id 比对 waiter.session_id，匹配
 - 等待结束（正常/异常/超时）时经 _cleanup 注销宿主侧的等待（幂等，
   宿主侧超时 AfterFunc 已自动注销时静默）。
 
-FILTERS / USER_SESSIONS 为模块级全局状态，插件可读写（常见用法：
-`FILTERS.append(selection_filter)` 后自行管理移除）。
+FILTERS / USER_SESSIONS 为模块级全局状态。USER_SESSIONS 是实际匹配
+入口（try_trigger 遍历它）；FILTERS 仅保留以兼容插件代码的 import，
+不参与匹配（SDK 的会话匹配走宿主 FeedSessionWait → try_trigger，
+与本体 star_manager 的 FILTERS 预分发语义不同）。
 """
 import abc
 import asyncio
@@ -36,7 +38,7 @@ from astrbot.core.platform import AstrMessageEvent
 logger = logging.getLogger("astrbot.session_waiter")
 
 USER_SESSIONS: dict[str, "SessionWaiter"] = {}  # 存储 SessionWaiter 实例
-FILTERS: list["SessionFilter"] = []  # 存储 SessionFilter 实例
+FILTERS: list["SessionFilter"] = []  # 保留仅供 import 兼容，不参与匹配
 
 
 class SessionController:
@@ -196,45 +198,31 @@ class SessionWaiter:
 
         try:
             return await self.session_controller.future
-        except Exception as e:
-            self._cleanup(e)
-            raise e
         finally:
+            # 单点清理：异常与正常结束都走这里，避免 _cleanup 被执行两次
+            # （原实现 except + finally 双调用，FILTERS.remove 靠 ValueError
+            # 兜底，状态表失真）。
             self._cleanup()
 
     def _cleanup(self, error: Exception | None = None) -> None:
         """清理会话"""
         USER_SESSIONS.pop(self.session_id, None)
-        try:
-            FILTERS.remove(self.session_filter)
-        except ValueError:
-            pass
         self.session_controller.stop(error)
         # 注销宿主侧等待（幂等：宿主超时已自动注销时不存在的 wait_id 静默；
-        # 注册失败 wait_id="" 时跳过）。_cleanup 是同步清理路径，注销以
-        # 任务方式异步执行，不阻塞清理。
+        # 注册失败 wait_id="" 时跳过）。_cleanup 可能不在事件循环线程执行，
+        # 注销任务直接调度到 SDK 常驻 loop（get_event_loop().create_task 在
+        # 无运行循环的线程上会创建永不执行的任务）。
         wait_id, self.wait_id = self.wait_id, ""
         if wait_id:
             try:
+                from astrbot._bridge import loop as _sdk_loop
                 from astrbot.core.star.context import get_host_bridge
 
                 bridge = get_host_bridge()
                 if bridge is not None:
-                    # _cleanup 是同步清理路径，可能不在事件循环线程执行：
-                    # get_event_loop/get_running_loop 取不到当前循环时跳过
-                    # 注销（仅告警，宿主侧超时 AfterFunc 会自动注销）。
-                    loop = None
-                    try:
-                        loop = asyncio.get_running_loop()
-                    except RuntimeError:
-                        loop = None
-                    if loop is None:
-                        try:
-                            loop = asyncio.get_event_loop()
-                        except RuntimeError:
-                            loop = None
-                    if loop is not None:
-                        loop.create_task(bridge.unregister_session_wait_async(wait_id))
+                    _sdk_loop.get_loop().create_task(
+                        bridge.unregister_session_wait_async(wait_id)
+                    )
             except Exception as e:
                 logger.debug(f"UnregisterSessionWait({wait_id}) 失败: {e}")
 
@@ -311,7 +299,6 @@ def session_waiter(timeout: int = 30, record_history_chains: bool = False):
                 raise ValueError("session_filter 必须是 SessionFilter")
 
             session_id = session_filter.filter(event)
-            FILTERS.append(session_filter)
 
             waiter = SessionWaiter(session_filter, session_id, record_history_chains)
             return await waiter.register_wait(func, timeout)

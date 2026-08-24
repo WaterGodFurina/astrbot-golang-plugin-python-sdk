@@ -583,6 +583,8 @@ class Context:
         """
         route = route if route.startswith("/") else "/" + route
         methods = [m.upper() for m in (methods or ["GET"])]
+        # 宿主经 ListWebApis RPC 实时拉取路由表（对齐 ListTools），Register
+        # 之后注册的路由无需重启即可被宿主网关 /api/plug/<plugin>/<route> 转发。
         for idx, (r, _, m, _) in enumerate(self._web_apis):
             if r == route and m == methods:
                 self._web_apis[idx] = (route, handler, methods, desc)

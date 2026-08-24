@@ -372,7 +372,9 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
             else:
                 params = {}
         except ValueError as e:
-            resp.text = f"参数错误: {e}"
+            from astrbot.core.utils.error_redaction import safe_error
+
+            resp.text = safe_error("参数错误: ", e)
             _set_result(resp, event, handled=True)
             return resp
 
@@ -380,8 +382,10 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         try:
             results = _call(bound, event, **params)
         except Exception as e:
+            from astrbot.core.utils.error_redaction import safe_error
+
             logger.error(f"命令 {request.name} 执行失败: {e}")
-            resp.text = f"插件执行失败: {e}"
+            resp.text = safe_error("插件执行失败: ", e)
             _set_result(resp, event, handled=True)
             return resp
 
@@ -429,26 +433,32 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                 from astrbot.core.star.star_handler import star_handlers_registry
 
                 md = star_handlers_registry.get_handler_by_full_name(request.name)
-                if md is not None:
-                    cfg = None
+                if md is None:
+                    # 注册表 miss（热重载后注册表快照过时等）：无法证明该事件
+                    # 被授权，fail-closed 拒绝而不是放行。
+                    logger.error(f"HandleFilter: 找不到 {request.name} 的注册元数据，拒绝")
+                    return plugin_pb2.HandleFilterResponse(allow=False)
+                cfg = None
+                try:
+                    cfg = getattr(inst, "config", None)
+                except Exception as e:
+                    logger.debug(f"读取过滤器配置失败: {e}")
+                for f in md.event_filters:
+                    if isinstance(f, CommandFilter):
+                        continue
                     try:
-                        cfg = getattr(inst, "config", None)
-                    except Exception as e:
-                        logger.debug(f"读取过滤器配置失败: {e}")
-                    for f in md.event_filters:
-                        if isinstance(f, CommandFilter):
-                            continue
-                        try:
-                            if not f.filter(event, cfg):
-                                return plugin_pb2.HandleFilterResponse(allow=True)
-                        except Exception as e:
-                            # 过滤器抛异常按"不拦截"放行，但记录日志便于排查。
-                            logger.warning(f"过滤器 {name} 的 {f} 执行异常，放行: {e}")
+                        if not f.filter(event, cfg):
                             return plugin_pb2.HandleFilterResponse(allow=True)
+                    except Exception as e:
+                        # 过滤器抛异常：无法证明事件被授权，fail-closed 拒绝。
+                        logger.warning(f"过滤器 {name} 的 {f} 执行异常，拒绝: {e}")
+                        return plugin_pb2.HandleFilterResponse(allow=False)
                 bound = _bind(handler, self.inst)
                 try:
                     results = _call(bound, event)
                 except Exception as e:
+                    # handler 执行异常保留放行：事件确已进入处理流程，不因
+                    # 插件自身故障拦截整个管线。
                     logger.error(f"过滤器 {request.name} 执行失败: {e}")
                     return plugin_pb2.HandleFilterResponse(allow=True)
                 allow = True
@@ -460,7 +470,10 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                 resp = plugin_pb2.HandleFilterResponse(allow=allow, sent=event._has_send_oper)
                 _set_result(resp, event, handled=True)
                 return resp
-        return plugin_pb2.HandleFilterResponse(allow=True)
+        # 注册表快照过时（热重载后 self.filter_handlers 未包含该过滤器）：
+        # 无法证明事件被授权，fail-closed 拒绝。
+        logger.error(f"HandleFilter: 未注册过滤器 {request.name}，拒绝")
+        return plugin_pb2.HandleFilterResponse(allow=False)
 
     def FeedSessionWait(self, request, context) -> plugin_pb2.FeedSessionWaitResponse:
         """宿主推送“插件注册了等待的 umo 的入站消息”（session_waiter 跨进程
@@ -660,8 +673,12 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
     def HandleLLMRequest(self, request, context) -> plugin_pb2.HandleLLMRequestResponse:
         if not self._wait_instanced():
             logger.warning("HandleLLMRequest: 插件实例尚未就绪，跳过 LLM 请求钩子")
-            return plugin_pb2.HandleLLMRequestResponse(system_prompt=request.system_prompt)
-        resp = plugin_pb2.HandleLLMRequestResponse(system_prompt=request.system_prompt)
+            return plugin_pb2.HandleLLMRequestResponse(
+                system_prompt=request.system_prompt, user_prompt=request.user_prompt
+            )
+        resp = plugin_pb2.HandleLLMRequestResponse(
+            system_prompt=request.system_prompt, user_prompt=request.user_prompt
+        )
         entry = self.hook_handlers.get(request.name)
         if entry is None:
             return resp
@@ -687,7 +704,10 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                 continue
             if isinstance(r, ProviderRequest):
                 req = r
+        # 插件可修改 system_prompt 与 prompt（user_prompt），宿主协议
+        # HandleLLMRequestResponse.user_prompt 回传修改后的用户提示词。
         resp.system_prompt = req.system_prompt or ""
+        resp.user_prompt = req.prompt or ""
         resp.stop = bool(getattr(req, "stop", False))
         resp.sent = event._has_send_oper
         _set_result(resp, event, stop=resp.stop, handled=True)
@@ -730,9 +750,11 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         try:
             results = _call(bound, event, **args)
         except Exception as e:
+            from astrbot.core.utils.error_redaction import safe_error
+
             logger.error(f"工具 {request.name} 执行失败: {e}")
             resp = plugin_pb2.HandleToolResponse(
-                text=f"工具 {request.name} 执行失败: {e}", is_error=True
+                text=safe_error(f"工具 {request.name} 执行失败: ", e), is_error=True
             )
             _set_result(resp, event, handled=True)
             return resp
@@ -806,6 +828,21 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                     description=tool.description or "",
                     params_json=json.dumps(params).encode(),
                 )
+            )
+        return resp
+
+    def ListWebApis(self, request, context) -> plugin_pb2.ListWebApisResponse:
+        """返回插件当前注册的 Web API 路由。
+
+        路由可能在实例化阶段（__init__/initialize 里的
+        context.register_web_api）注册，晚于 Register 快照——宿主通过本
+        RPC 实时拉取最新路由表（对齐 ListTools），使运行期注册的 Web API
+        无需重启即可被宿主网关路由。
+        """
+        resp = plugin_pb2.ListWebApisResponse()
+        for route, _, methods, desc in self.web_apis:
+            resp.web_apis.append(
+                plugin_pb2.WebApiDesc(route=route, methods=list(methods), description=desc)
             )
         return resp
 
@@ -897,8 +934,46 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         )
 
         fake = FakeQuartRequest(plugin_req, path_params)
-        # 注入 quart 全局（插件代码 from quart import request/jsonify/session 等）。
-        # gRPC 线程池复用线程，ContextVar 会残留到下一个请求 → 必须 reset。
+        bound = _bind(handler, self.inst)
+        # 路径参数按名解包（Python 本体：view_handler(**path_values)）
+        kwargs = dict(path_params)
+
+        async def _run_with_ctx():
+            # async handler 的协程在常驻 loop 线程运行（loop.run_coro 的
+            # run_coroutine_threadsafe 继承的是 loop 线程的 context，而非
+            # gRPC handler 线程的 context），因此 quart/astrbot 的 ContextVar
+            # 必须在协程内部（loop 线程上）注入。
+            cv_tokens: list[tuple[Any, Any]] = []
+            try:
+                from quart.globals import _cv_app, _cv_request
+
+                cv_tokens.append((_cv_app, _cv_app.set(FakeQuartAppCtx())))
+                cv_tokens.append((_cv_request, _cv_request.set(fake)))
+            except Exception as e:
+                logger.debug(f"quart 全局上下文注入失败: {e}")
+            try:
+                with bind_request_context(plugin_req):
+                    result = bound(**kwargs)
+                    if inspect.isasyncgen(result):
+                        out: list = []
+                        async for item in result:
+                            out.append(item)
+                        return out
+                    if inspect.iscoroutine(result):
+                        return await result
+                    return result
+            finally:
+                for var, token in reversed(cv_tokens):
+                    try:
+                        var.reset(token)
+                    except Exception:
+                        pass
+
+        if inspect.iscoroutinefunction(bound) or inspect.isasyncgenfunction(bound):
+            return loop.run_coro(_run_with_ctx(), timeout=HANDLER_TIMEOUT)
+
+        # 同步 handler：直接在 gRPC 线程注入执行（协程在 loop 线程运行，
+        # 此处注入的 ContextVar 对同步执行可见）。
         cv_tokens: list[tuple[Any, Any]] = []
         try:
             from quart.globals import _cv_app, _cv_request
@@ -910,9 +985,6 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
 
         try:
             with bind_request_context(plugin_req):
-                bound = _bind(handler, self.inst)
-                # 路径参数按名解包（Python 本体：view_handler(**path_values)）
-                kwargs = dict(path_params)
                 results = _call(bound, **kwargs)
                 return results[-1] if results else None
         finally:
@@ -933,7 +1005,15 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         body: bytes = b""
 
         if isinstance(result, tuple) and len(result) >= 2 and isinstance(result[1], int):
-            result, status = result
+            status = result[1]
+            if len(result) >= 3:
+                # quart/flask 三元组 (body, status, headers)：headers 不能丢弃
+                raw_headers = result[2]
+                if isinstance(raw_headers, dict):
+                    headers.update(raw_headers)
+                elif isinstance(raw_headers, (list, tuple)):
+                    headers.update(dict(raw_headers))
+            result = result[0]
         if result is None:
             body = b""
         elif isinstance(result, dict):
@@ -994,11 +1074,25 @@ class FakeQuartRequest:
         self.path_params = path_params
         self.method = plugin_req.method
         self.path = plugin_req.path
-        self.url = plugin_req.path
-        self.full_path = plugin_req.path
-        self.query_string = ""
+        # host / query_string / url 从请求头与 query 参数还原（不能硬编码占位
+        # 值：插件做签名校验、OAuth 回调、webhook 验证时依赖真实值）。
+        host = (
+            plugin_req.headers.get("host")
+            or plugin_req.headers.get("x-forwarded-host")
+            or "localhost"
+        )
+        self.host = host
+        pairs = plugin_req.query.multi_items()
+        from urllib.parse import quote
+
+        self.query_string = "&".join(
+            f"{quote(str(k), safe='')}={quote(str(v), safe='')}" for k, v in pairs
+        )
+        self.url = f"http://{host}{plugin_req.path}" + (
+            f"?{self.query_string}" if self.query_string else ""
+        )
+        self.full_path = self.url if self.query_string else plugin_req.path
         self.endpoint = plugin_req.path
-        self.host = ""
         self.remote_addr = plugin_req.client_host or ""
         self.max_content_length = 64 * 1024 * 1024
         self.headers = FakeHeaders(plugin_req.headers)
@@ -1084,19 +1178,18 @@ class FakeMultiDict:
         self._pairs = pairs
 
     def get(self, key, default=None, type=None):
-        val = None
-        for k, v in reversed(self._pairs):
-            if k == key:
-                val = v
-                break
-        if val is None:
-            return default
-        if type is not None:
-            try:
-                return type(val)
-            except (TypeError, ValueError):
-                return default
-        return val
+        # werkzeug MultiDict 语义：返回第一次出现的值（reversed 会取到
+        # 最后一次，与 quart/werkzeug 行为相反）
+        for k, v in self._pairs:
+            if k != key:
+                continue
+            if type is not None:
+                try:
+                    return type(v)
+                except (TypeError, ValueError):
+                    return default
+            return v
+        return default
 
     def getlist(self, key):
         return [v for k, v in self._pairs if k == key]
@@ -1183,10 +1276,23 @@ class FakeQuartApp:
             return result
         if isinstance(result, tuple) and len(result) >= 2 and isinstance(result[1], int):
             value, status = result[0], result[1]
+            extra_headers: dict = {}
+            if len(result) >= 3:
+                raw_headers = result[2]
+                if isinstance(raw_headers, dict):
+                    extra_headers = dict(raw_headers)
+                elif isinstance(raw_headers, (list, tuple)):
+                    extra_headers = dict(raw_headers)
             if isinstance(value, dict):
                 body = json.dumps(value, ensure_ascii=False).encode()
-                return Response(body, status=status, headers={"Content-Type": "application/json"})
-            return Response(str(value).encode(), status=status)
+                headers_out = {"Content-Type": "application/json"}
+                headers_out.update(extra_headers)
+                return Response(body, status=status, headers=headers_out)
+            return Response(
+                str(value).encode(),
+                status=status,
+                headers=extra_headers or None,
+            )
         if isinstance(result, dict):
             body = json.dumps(result, ensure_ascii=False).encode()
             return Response(body, status=200, headers={"Content-Type": "application/json"})
