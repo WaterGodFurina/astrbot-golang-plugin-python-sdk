@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-from . import goplugin_pb2 as goplugin__pb2
+import goplugin_pb2 as goplugin__pb2
 
 GRPC_GENERATED_VERSION = '1.83.0'
 GRPC_VERSION = grpc.__version__

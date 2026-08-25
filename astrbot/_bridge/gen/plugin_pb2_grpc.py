@@ -222,7 +222,8 @@ class PluginServiceServicer:
         """GetConfigSchema returns the plugin's CURRENT config schema (JSON), which
         plugins may refresh at runtime (e.g. update_manager fills plugin-list
         dropdown options in __init__). Aligns with Python AstrBot's WebUI reading
-        the live star instance config.schema.
+        the live star instance config.schema. Host falls back to the Register
+        snapshot when this RPC is unimplemented/empty.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -862,6 +863,11 @@ class HostServiceStub:
                 request_serializer=plugin__pb2.UninstallPluginRequest.SerializeToString,
                 response_deserializer=plugin__pb2.Empty.FromString,
                 _registered_method=True)
+        self.ListCommandDescriptors = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/ListCommandDescriptors',
+                request_serializer=plugin__pb2.Empty.SerializeToString,
+                response_deserializer=plugin__pb2.CommandDescriptorsResponse.FromString,
+                _registered_method=True)
         self.RegisterSessionWait = channel.unary_unary(
                 '/astrbot.sdk.v1.HostService/RegisterSessionWait',
                 request_serializer=plugin__pb2.RegisterSessionWaitRequest.SerializeToString,
@@ -946,9 +952,8 @@ class HostServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def HtmlRender(self, request, context):
-        """HtmlRender renders an HTML/Jinja2 template with data into a PNG image
-        (host t2i engine first, fallback to headless Chromium) and returns the
-        PNG bytes (base64). The plugin can then send it as an Image component.
+        """HtmlRender renders an HTML template + data into an image via the host
+        (t2i remote preferred, local gg fallback). Returns PNG bytes (base64).
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1105,6 +1110,15 @@ class HostServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListCommandDescriptors(self, request, context):
+        """ListCommandDescriptors 返回全部插件的命令描述符（含子命令/组/别名/
+        权限/描述）。子进程架构下插件自身进程的 star 注册表只含自己的
+        handler，helps 类插件需经宿主查询全局指令列表。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def RegisterSessionWait(self, request, context):
         """── 会话等待（SessionWaiter 跨进程喂入）──
         插件注册"等待某 umo 的下一条消息"（session_waiter.register_wait）。
@@ -1122,18 +1136,14 @@ class HostServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def RegisterBridgeHook(self, request, context):
-        """── 桥接钩子（botpy/telegram 等兼容层用）──
-        插件向宿主注册"桥接钩子"：宿主收到入站消息时把序列化事件推给该插件的
-        HandleHook(name=hook_name)，兼容层再分发到装饰器注册的 handler。
-        注册表为空 = 宿主零额外推送开销。
+        """── 桥接钩子（botpy/telegram 等兼容层）──
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def UnregisterBridgeHook(self, request, context):
-        """插件向宿主注销桥接钩子。
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -1290,6 +1300,11 @@ def add_HostServiceServicer_to_server(servicer, server):
                     servicer.UninstallPlugin,
                     request_deserializer=plugin__pb2.UninstallPluginRequest.FromString,
                     response_serializer=plugin__pb2.Empty.SerializeToString,
+            ),
+            'ListCommandDescriptors': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListCommandDescriptors,
+                    request_deserializer=plugin__pb2.Empty.FromString,
+                    response_serializer=plugin__pb2.CommandDescriptorsResponse.SerializeToString,
             ),
             'RegisterSessionWait': grpc.unary_unary_rpc_method_handler(
                     servicer.RegisterSessionWait,
@@ -2123,6 +2138,33 @@ class HostService:
             '/astrbot.sdk.v1.HostService/UninstallPlugin',
             plugin__pb2.UninstallPluginRequest.SerializeToString,
             plugin__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListCommandDescriptors(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/ListCommandDescriptors',
+            plugin__pb2.Empty.SerializeToString,
+            plugin__pb2.CommandDescriptorsResponse.FromString,
             options,
             channel_credentials,
             insecure,

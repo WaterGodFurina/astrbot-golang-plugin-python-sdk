@@ -686,6 +686,30 @@ class HostBridge:
             logger.warning(f"GetStar 失败: {e}")
             return None
 
+    def list_command_descriptors(self) -> list[dict]:
+        """获取宿主聚合的全部插件命令描述符（含子命令/组/别名/权限/描述）。
+
+        子进程架构下插件自身进程的 star 注册表只含自己的 handler，helps 类
+        插件需经此跨进程枚举全部插件的指令（对齐宿主 star.CollectCommandDescriptors）。
+        宿主旧版（无该 RPC）返回 UNIMPLEMENTED → 回退 []。
+        """
+        if not self.ensure_connected():
+            return []
+        try:
+            resp = self._stub.ListCommandDescriptors(
+                plugin_pb2.Empty(),
+                timeout=30,
+            )
+            out: list[dict] = []
+            for raw in resp.descriptors_json:
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    out.append(data)
+            return out
+        except Exception as e:
+            logger.debug(f"ListCommandDescriptors 失败（宿主可能不支持）: {e}")
+            return []
+
     def set_plugin_enabled(self, plugin_name: str, enabled: bool) -> bool:
         if not self.ensure_connected():
             return False

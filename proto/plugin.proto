@@ -81,7 +81,8 @@ service PluginService {
   // GetConfigSchema returns the plugin's CURRENT config schema (JSON), which
   // plugins may refresh at runtime (e.g. update_manager fills plugin-list
   // dropdown options in __init__). Aligns with Python AstrBot's WebUI reading
-  // the live star instance config.schema.
+  // the live star instance config.schema. Host falls back to the Register
+  // snapshot when this RPC is unimplemented/empty.
   rpc GetConfigSchema(Empty) returns (GetConfigSchemaResponse);
   // Cleanup is called when the host unloads the plugin.
   rpc Cleanup(Empty) returns (Empty);
@@ -106,9 +107,8 @@ service HostService {
   // TextToImage renders text into an image (host t2i engine) and returns the
   // PNG bytes (base64). The plugin can then send it as an Image component.
   rpc TextToImage(TextToImageRequest) returns (TextToImageResponse);
-  // HtmlRender renders an HTML/Jinja2 template with data into a PNG image
-  // (host t2i engine first, fallback to headless Chromium) and returns the
-  // PNG bytes (base64). The plugin can then send it as an Image component.
+  // HtmlRender renders an HTML template + data into an image via the host
+  // (t2i remote preferred, local gg fallback). Returns PNG bytes (base64).
   rpc HtmlRender(HtmlRenderRequest) returns (HtmlRenderResponse);
 
   // ── 会话管理（对齐 Python AstrBot conversation_manager）──
@@ -160,6 +160,10 @@ service HostService {
   rpc InstallPlugin(InstallPluginRequest) returns (Empty);
   // UninstallPlugin 卸载插件。
   rpc UninstallPlugin(UninstallPluginRequest) returns (Empty);
+  // ListCommandDescriptors 返回全部插件的命令描述符（含子命令/组/别名/
+  // 权限/描述）。子进程架构下插件自身进程的 star 注册表只含自己的
+  // handler，helps 类插件需经宿主查询全局指令列表。
+  rpc ListCommandDescriptors(Empty) returns (CommandDescriptorsResponse);
 
   // ── 会话等待（SessionWaiter 跨进程喂入）──
   // 插件注册"等待某 umo 的下一条消息"（session_waiter.register_wait）。
@@ -168,12 +172,8 @@ service HostService {
   // 插件注销等待（会话结束/超时）。
   rpc UnregisterSessionWait(UnregisterSessionWaitRequest) returns (Empty);
 
-  // ── 桥接钩子（botpy/telegram 等兼容层用）──
-  // 插件向宿主注册"桥接钩子"：宿主收到入站消息时把序列化事件推给该插件的
-  // HandleHook(name=hook_name)，兼容层再分发到装饰器注册的 handler。
-  // 注册表为空 = 宿主零额外推送开销。
+  // ── 桥接钩子（botpy/telegram 等兼容层）──
   rpc RegisterBridgeHook(BridgeHookRequest) returns (Empty);
-  // 插件向宿主注销桥接钩子。
   rpc UnregisterBridgeHook(BridgeHookRequest) returns (Empty);
 }
 
@@ -205,8 +205,7 @@ message CommandDesc {
   string description = 3;
   string usage = 4;
   string permission = 5; // "everyone" | "admin"
-  // 父指令组名（顶层命令为空串）；is_sub_command=true 时有效。
-  // 新增字段，旧宿主/旧插件按 proto3 未知字段语义忽略。
+  // Group/sub-command relation (empty when the command is top-level).
   string parent_group = 6;
   bool is_sub_command = 7;
 }
@@ -459,6 +458,7 @@ message SetConfigRequest {
   bytes config_json = 2;
 }
 
+// 只追加字段保持前后向兼容：旧字段不改名/不改号/不删除。
 message ChatLLMRequest {
   // User prompt sent to the model.
   string prompt = 1;
@@ -470,14 +470,13 @@ message ChatLLMRequest {
   // Optional image URLs/paths/base64 appended to the user message
   // (multimodal request).
   repeated string image_urls = 4;
-  // Optional audio URLs/paths appended to the user message (multimodal
-  // request, provider-dependent).
+  // 多模态音频 URL/路径（provider 支持时）。
   repeated string audio_urls = 5;
-  // Function tool definitions as a JSON array (OpenAI function schema).
+  // 函数工具定义 JSON 数组（OpenAI function schema）。
   bytes tools_json = 6;
-  // Multi-turn context as a JSON array ([{"role","content"}]).
+  // 多轮上下文 JSON 数组（[{"role","content"}]）。
   bytes contexts_json = 7;
-  // Target provider id; empty = use the default provider.
+  // 指定 provider id；空 = 使用默认 provider。
   string provider_id = 8;
 }
 
@@ -514,12 +513,12 @@ message HtmlRenderRequest {
   string template = 1;
   // 模板数据 JSON 字符串。
   string data = 2;
-  // 渲染选项 JSON 字符串。
+  // 渲染选项 JSON 字符串（如 {"type":"png","full_page":true}）。
   string options = 3;
 }
 
 message HtmlRenderResponse {
-  // PNG image bytes, base64-encoded (no data: prefix).
+  // PNG bytes base64（无 data: 前缀）。
   string image_base64 = 1;
 }
 
@@ -685,6 +684,25 @@ message StarsResponse {
   repeated bytes stars_json = 1; // JSON of StarPayload
 }
 
+// 单条命令描述符（JSON 序列化承载，对齐宿主 star.CommandDescriptor）。
+message CommandDescriptorPayload {
+  string plugin_name = 1;       // 归属插件 id（如 astrbot_plugin_xxx_python）
+  string handler_full_name = 2; // 宿主注册表全名
+  string handler_name = 3;      // 命令 handler 名
+  string command = 4;           // 有效命令（组命令为组名）
+  repeated string aliases = 5;  // 别名（不含父组前缀）
+  string description = 6;
+  string permission = 7;        // "admin" | "member"
+  bool enabled = 8;
+  string parent_group = 9;      // 子命令的父组名（非子命令为空）
+  bool is_sub_command = 10;
+  string command_type = 11;     // "group" 或空
+}
+
+message CommandDescriptorsResponse {
+  repeated bytes descriptors_json = 1; // JSON of CommandDescriptorPayload
+}
+
 message StarResponse {
   bytes star_json = 1; // JSON of StarPayload
 }
@@ -720,9 +738,9 @@ message UnregisterSessionWaitRequest {
   string wait_id = 1;
 }
 
-// 桥接钩子注册/注销（botpy/telegram 等兼容层用）：宿主收到入站消息时把
-// 序列化事件推给该插件的 HandleHook(name=hook_name)，兼容层再分发到
-// 装饰器注册的 handler。注册表为空 = 宿主零额外推送开销。
+// 插件向宿主注册"桥接钩子"（botpy/telegram 等兼容层用）：宿主收到入站
+// 消息时把序列化事件推给该插件的 HandleHook(name=hook_name)，兼容层再
+// 分发到装饰器注册的 handler。注册表为空 = 宿主零额外推送开销。
 message BridgeHookRequest {
   string plugin_name = 1;
   string hook_name = 2;
@@ -739,7 +757,5 @@ message FeedSessionWaitResponse {
 }
 
 message GetConfigSchemaResponse {
-  // JSON schema (raw or FlatSchema format). Empty means host falls back to
-  // the Register snapshot.
-  bytes schema_json = 1;
+  bytes schema_json = 1; // JSON schema (FlatSchema format: {"type":..., "properties":{...}} or raw)
 }
