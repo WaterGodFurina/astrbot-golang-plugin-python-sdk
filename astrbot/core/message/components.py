@@ -268,6 +268,12 @@ class Record(BaseMessageComponent):
 
     @staticmethod
     def fromFileSystem(path, **_):
+        if isinstance(path, str) and (
+            path.startswith("data:") or path.startswith("base64://")
+        ):
+            # data URI / base64 内容是媒体数据而非文件系统路径：直接承载，
+            # 不做 Path.resolve（会把 base64 中的 "//" 规范化破坏数据）。
+            return Record(file=path, **_)
         file_path = Path(path).resolve(strict=False)
         return Record(file=file_path.as_uri(), path=str(file_path), **_)
 
@@ -381,6 +387,12 @@ class Video(BaseMessageComponent):
 
     @staticmethod
     def fromFileSystem(path, **_):
+        if isinstance(path, str) and (
+            path.startswith("data:") or path.startswith("base64://")
+        ):
+            # data URI / base64 内容是媒体数据而非文件系统路径：直接承载，
+            # 不做 Path.resolve（会把 base64 中的 "//" 规范化破坏数据）。
+            return Video(file=path, **_)
         file_path = Path(path).resolve(strict=False)
         return Video(file=file_path.as_uri(), path=str(file_path), **_)
 
@@ -574,6 +586,13 @@ class Image(BaseMessageComponent):
 
     @staticmethod
     def fromFileSystem(path, **_):
+        if isinstance(path, str) and (
+            path.startswith("data:") or path.startswith("base64://")
+        ):
+            # data URI / base64 内容是媒体数据而非文件系统路径：直接承载，
+            # 不做 Path.resolve——resolve 会把 base64 中的 "//" 当作路径分隔
+            # 符规范化（// → /），破坏媒体数据（帮助图片等长图必现）。
+            return Image(file=path, **_)
         file_path = Path(path).resolve(strict=False)
         return Image(file=file_path.as_uri(), path=str(file_path), **_)
 
