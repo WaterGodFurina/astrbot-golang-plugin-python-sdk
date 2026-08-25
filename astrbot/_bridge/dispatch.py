@@ -25,6 +25,7 @@ from astrbot.core.provider.entities import (
 from astrbot.core.star.filter.command import CommandFilter
 from astrbot.core.star.filter.custom_filter import CustomFilter
 from astrbot.core.star.filter.permission import PermissionType, PermissionTypeFilter
+from astrbot.core.star.host_commands import is_virtual_handler, sync_host_commands
 from astrbot.core.star.star_handler import EventType, star_handlers_registry
 
 logger = logging.getLogger("astrbot.dispatch")
@@ -232,6 +233,11 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
             logger.debug(f"aiocqhttp 桥接钩子注册失败: {e}")
 
         for md in star_handlers_registry.all():
+            if is_virtual_handler(md):
+                # 宿主全局命令的虚拟条目：仅供 helps 类插件遍历注册表收集
+                # 指令，不注册进 commands/filters（管线不得匹配到无真实
+                # handler 的虚拟命令）。
+                continue
             inst = self.inst
             handler = _bind(md.handler, inst)
             if md.event_type == EventType.OnCallingFuncToolEvent:
@@ -348,10 +354,19 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                 return f, handler
         return None, None
 
+    def _host_bridge_getter(self):
+        """返回宿主桥（HostBridge）获取器（惰性，供 host_commands 同步）。"""
+        from astrbot._bridge.host import get_bridge
+
+        return get_bridge
+
     def HandleCommand(self, request, context) -> plugin_pb2.HandleCommandResponse:
         if not self._wait_instanced():
             logger.warning("HandleCommand: 插件实例尚未就绪，跳过命令处理")
             return plugin_pb2.HandleCommandResponse()
+        # 刷新宿主全局命令虚拟条目（helps 类插件渲染前经此拿到最新全局指令；
+        # TTL 内不重复拉取）。
+        sync_host_commands(self._host_bridge_getter())
         f, handler = self._find_command(request.name)
         resp = plugin_pb2.HandleCommandResponse()
         if f is None or handler is None:

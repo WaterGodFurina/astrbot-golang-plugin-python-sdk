@@ -112,6 +112,21 @@ class StarHandlerRegistry:
         self._handlers.clear()
         self.star_handlers_map.clear()
 
+    def replace_all(self, handlers: list[StarHandlerMetadata]) -> None:
+        """整体替换注册表内容（保留 priority 排序语义）。
+
+        用于刷新宿主全局命令的虚拟条目：先移除旧虚拟 handler，再追加新
+        虚拟 handler（真实 handler 保持不变，见 host_commands.sync_host_commands）。
+        """
+        for h in handlers:
+            if "priority" not in h.extras_configs:
+                h.extras_configs["priority"] = 0
+        self._handlers = list(handlers)
+        self._handlers.sort(key=lambda h: -h.extras_configs["priority"])
+        self.star_handlers_map = {
+            h.handler_full_name: h for h in self._handlers
+        }
+
 
 star_handlers_registry = StarHandlerRegistry()
 """全局 Star Handler 注册表"""
