@@ -62,20 +62,17 @@ class Star(CommandParserMixin, PluginKVStoreMixin):
             star_map[cls.__module__].module_path = cls.__module__
 
     @staticmethod
-    def _png_to_local_path(png: bytes) -> str:
-        """PNG 字节写入临时文件返回路径（对齐原版 save_temp_img 语义）。
+    def _png_to_data_uri(png: bytes) -> str:
+        """PNG 字节 → data URI（跨进程/Docker 部署安全的媒体承载）。
 
-        return_url=False 时原版返回本地文件路径；返回裸 base64 会被
-        Image.fromFileSystem 误作相对路径 Path.resolve（base64 中 // 被
-        规范化破坏数据，且序列化后宿主/平台无法识别）。
+        return_url=False 也必须走 base64：插件进程与协议端（NapCat 等）
+        可能不在同一文件系统，返回本地临时文件路径会让协议端 stat 不到
+        （ENOENT）；data URI 经宿主 ComponentsFromSDK 归一化为 Base64 后
+        以 base64:// 发送，不依赖任何共享路径。
         """
-        import os
-        import tempfile
+        import base64
 
-        fd, path = tempfile.mkstemp(suffix=".png", prefix="astrbot_t2i_")
-        with os.fdopen(fd, "wb") as f:
-            f.write(png)
-        return path
+        return "data:image/png;base64," + base64.b64encode(png).decode()
 
     async def text_to_image(self, text: str, return_url=True) -> str:
         """将文本转换为图片（宿主 t2i 渲染）。
@@ -94,9 +91,9 @@ class Star(CommandParserMixin, PluginKVStoreMixin):
             logger.warning(f"text_to_image 失败: {e}")
             raise
         if not return_url:
-            # 对齐原版：返回本地临时文件路径（插件常将其交给
-            # Image.fromFileSystem 作为路径使用）。
-            return self._png_to_local_path(png)
+            # 对齐宿主跨进程/Docker 部署：一律走 base64（data URI），
+            # 绝不返回本地文件路径（协议端可能 stat 不到）。
+            return self._png_to_data_uri(png)
         # 返回 data URL，插件可直接作为 Image 组件发送
         import base64
 
@@ -133,8 +130,8 @@ class Star(CommandParserMixin, PluginKVStoreMixin):
             logger.warning(f"html_render 失败: {e}")
             raise
         if not return_url:
-            # 对齐原版：返回本地临时文件路径。
-            return self._png_to_local_path(png)
+            # 跨进程/Docker 部署：一律走 base64（data URI）。
+            return self._png_to_data_uri(png)
         # 返回 data URL，插件可直接作为 Image 组件发送
         import base64
 
