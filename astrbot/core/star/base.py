@@ -61,6 +61,22 @@ class Star(CommandParserMixin, PluginKVStoreMixin):
             star_map[cls.__module__].star_cls_type = cls
             star_map[cls.__module__].module_path = cls.__module__
 
+    @staticmethod
+    def _png_to_local_path(png: bytes) -> str:
+        """PNG 字节写入临时文件返回路径（对齐原版 save_temp_img 语义）。
+
+        return_url=False 时原版返回本地文件路径；返回裸 base64 会被
+        Image.fromFileSystem 误作相对路径 Path.resolve（base64 中 // 被
+        规范化破坏数据，且序列化后宿主/平台无法识别）。
+        """
+        import os
+        import tempfile
+
+        fd, path = tempfile.mkstemp(suffix=".png", prefix="astrbot_t2i_")
+        with os.fdopen(fd, "wb") as f:
+            f.write(png)
+        return path
+
     async def text_to_image(self, text: str, return_url=True) -> str:
         """将文本转换为图片（宿主 t2i 渲染）。
 
@@ -78,9 +94,9 @@ class Star(CommandParserMixin, PluginKVStoreMixin):
             logger.warning(f"text_to_image 失败: {e}")
             raise
         if not return_url:
-            import base64
-
-            return base64.b64encode(png).decode()
+            # 对齐原版：返回本地临时文件路径（插件常将其交给
+            # Image.fromFileSystem 作为路径使用）。
+            return self._png_to_local_path(png)
         # 返回 data URL，插件可直接作为 Image 组件发送
         import base64
 
@@ -117,9 +133,8 @@ class Star(CommandParserMixin, PluginKVStoreMixin):
             logger.warning(f"html_render 失败: {e}")
             raise
         if not return_url:
-            import base64
-
-            return base64.b64encode(png).decode()
+            # 对齐原版：返回本地临时文件路径。
+            return self._png_to_local_path(png)
         # 返回 data URL，插件可直接作为 Image 组件发送
         import base64
 
