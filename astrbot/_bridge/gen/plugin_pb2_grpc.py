@@ -868,6 +868,11 @@ class HostServiceStub:
                 request_serializer=plugin__pb2.Empty.SerializeToString,
                 response_deserializer=plugin__pb2.CommandDescriptorsResponse.FromString,
                 _registered_method=True)
+        self.ListPlatforms = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/ListPlatforms',
+                request_serializer=plugin__pb2.Empty.SerializeToString,
+                response_deserializer=plugin__pb2.PlatformsResponse.FromString,
+                _registered_method=True)
         self.RegisterSessionWait = channel.unary_unary(
                 '/astrbot.sdk.v1.HostService/RegisterSessionWait',
                 request_serializer=plugin__pb2.RegisterSessionWaitRequest.SerializeToString,
@@ -1119,6 +1124,14 @@ class HostServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListPlatforms(self, request, context):
+        """ListPlatforms 返回全部已加载平台实例元数据（id/type/name/display_name/
+        config），供插件（如群分析类）发现平台并创建跨进程 bot 代理。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def RegisterSessionWait(self, request, context):
         """── 会话等待（SessionWaiter 跨进程喂入）──
         插件注册"等待某 umo 的下一条消息"（session_waiter.register_wait）。
@@ -1305,6 +1318,11 @@ def add_HostServiceServicer_to_server(servicer, server):
                     servicer.ListCommandDescriptors,
                     request_deserializer=plugin__pb2.Empty.FromString,
                     response_serializer=plugin__pb2.CommandDescriptorsResponse.SerializeToString,
+            ),
+            'ListPlatforms': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListPlatforms,
+                    request_deserializer=plugin__pb2.Empty.FromString,
+                    response_serializer=plugin__pb2.PlatformsResponse.SerializeToString,
             ),
             'RegisterSessionWait': grpc.unary_unary_rpc_method_handler(
                     servicer.RegisterSessionWait,
@@ -2165,6 +2183,33 @@ class HostService:
             '/astrbot.sdk.v1.HostService/ListCommandDescriptors',
             plugin__pb2.Empty.SerializeToString,
             plugin__pb2.CommandDescriptorsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListPlatforms(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/ListPlatforms',
+            plugin__pb2.Empty.SerializeToString,
+            plugin__pb2.PlatformsResponse.FromString,
             options,
             channel_credentials,
             insecure,

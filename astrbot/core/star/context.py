@@ -148,25 +148,128 @@ def _resolve_tool_handler_module_path(tool: FunctionTool) -> str:
     return registered_module_path or ".".join(module_parts)
 
 
-class _PlatformManagerStub:
-    """轻量 PlatformManager 占位（Go 宿主无平台实例体系）。
+class _PlatformBotProxy:
+    """跨进程 bot 客户端代理（Go 宿主无 Python 平台对象）。
 
-    至少提供 get_insts() 返回 [] 与 platform_insts 属性，让插件
-    `hasattr(context.platform_manager, ...)` 守卫不静默降级；
-    插件依赖真实平台实例（如 Telegram 预览回调）时仍不可用但不会崩。
+    提供插件 OneBot 适配器期望的 async call_action：转发宿主
+    HostService.CallAction（按平台实例 ID/类型解析适配器）。
+    """
+
+    def __init__(self, platform_id: str) -> None:
+        self._platform_id = platform_id
+
+    async def call_action(self, api: str, **params) -> Any:
+        bridge = get_host_bridge()
+        if bridge is None or not bridge.ensure_connected():
+            raise RuntimeError("宿主桥未就绪，无法调用平台 API")
+        return await bridge.call_action_async(self._platform_id, api, params)
+
+
+class _PlatformMetaStub:
+    """平台元数据占位（对齐本体 PlatformMetadata 的 id/type/name 访问）。"""
+
+    def __init__(self, meta: dict) -> None:
+        self.id: str = str(meta.get("id") or "")
+        self.type: str = str(meta.get("type") or "")
+        self.name: str = str(meta.get("name") or meta.get("type") or "")
+        self.adapter_display_name: str = str(meta.get("display_name") or "")
+        self.description: str = str(meta.get("description") or "")
+        self.support_streaming_message: bool = False
+        self.support_proactive_message: bool = False
+
+    @property
+    def adapter_name(self) -> str:
+        return self.name
+
+
+class _PlatformStub:
+    """宿主平台实例占位：metadata + config + bot 代理。
+
+    群分析类插件经 context.platform_manager.get_insts() 遍历平台时读取
+    metadata.id/type/name 与 bot（call_action 转发宿主），使"检测平台"
+    不再恒为 0（对齐原版同进程平台实例在外观上的最小协议）。
+    """
+
+    def __init__(self, meta: dict) -> None:
+        self._meta = _PlatformMetaStub(meta)
+        self._bot = _PlatformBotProxy(self._meta.id)
+        self.config: dict = {}
+        cfg = meta.get("config")
+        if isinstance(cfg, dict):
+            self.config = cfg
+        # 兼容属性：lark_api / get_client() / bot / client（原版 Platform 形态）。
+        self.lark_api = None
+        self.bot = self._bot
+        self.client = self._bot
+
+    def meta(self) -> _PlatformMetaStub:
+        return self._meta
+
+    @property
+    def metadata(self) -> _PlatformMetaStub:
+        return self._meta
+
+    def get_client(self) -> _PlatformBotProxy:
+        return self._bot
+
+    def get_stats(self) -> dict:
+        meta = self._meta
+        return {
+            "id": meta.id,
+            "type": meta.type,
+            "display_name": meta.adapter_display_name or meta.name,
+            "status": "RUNNING",
+            "started_at": None,
+            "error_count": 0,
+            "last_error": None,
+        }
+
+
+class _PlatformManagerStub:
+    """PlatformManager 兼容封装（Go 宿主跨进程）。
+
+    从宿主 HostService.ListPlatforms 拉取已加载平台元数据，构造平台占位
+    实例（metadata + bot 代理，call_action 转发宿主）。首次访问时惰性
+    拉取并缓存：群分析类插件 get_insts() 能列出真实平台（不再恒为 0）。
     """
 
     def __init__(self) -> None:
         self.platform_insts: list[Any] = []
         self.platform_insts_map: dict[str, Any] = {}
+        self._refreshed = False
+
+    def _refresh(self) -> None:
+        if self._refreshed:
+            return
+        self._refreshed = True
+        bridge = get_host_bridge()
+        if bridge is None or not bridge.ensure_connected():
+            return
+        try:
+            raw = bridge.list_platforms()
+        except Exception:
+            return
+        insts: list[_PlatformStub] = []
+        for meta in raw:
+            if not isinstance(meta, dict):
+                continue
+            stub = _PlatformStub(meta)
+            insts.append(stub)
+            if stub._meta.id:
+                self.platform_insts_map[stub._meta.id] = stub
+        self.platform_insts = insts
 
     def get_insts(self) -> list:
-        """获取平台实例列表（占位：恒为 []）。"""
-        return []
+        """获取平台实例列表（从宿主惰性拉取，非消息路径）。"""
+        self._refresh()
+        return self.platform_insts
 
     def get_platform(self, platform_id: str) -> Any | None:
-        """按平台 ID 获取实例（占位：恒为 None）。"""
-        return None
+        """按平台 ID 获取实例（null 时取第一个）。"""
+        self._refresh()
+        if platform_id:
+            return self.platform_insts_map.get(platform_id)
+        return self.platform_insts[0] if self.platform_insts else None
 
 
 class Context:

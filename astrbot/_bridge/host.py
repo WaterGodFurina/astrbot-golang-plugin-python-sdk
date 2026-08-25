@@ -670,6 +670,26 @@ class HostBridge:
             logger.warning(f"ListStars 失败: {e}")
             return []
 
+    def list_platforms(self) -> list[dict]:
+        """获取宿主已加载的全部平台实例元数据（id/type/name/display_name）。
+
+        子进程架构下插件进程无平台对象，群分析类插件经此发现平台并构造
+        跨进程 bot 代理（call_action 转发宿主）。仅初始化时调用，非消息路径。
+        """
+        if not self.ensure_connected():
+            return []
+        try:
+            resp = self._stub.ListPlatforms(plugin_pb2.Empty(), timeout=30)
+        except Exception as e:
+            logger.debug(f"ListPlatforms 失败（宿主可能不支持）: {e}")
+            return []
+        out: list[dict] = []
+        for raw in resp.platforms_json:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                out.append(data)
+        return out
+
     def get_star(self, name: str) -> dict | None:
         if not self.ensure_connected():
             return None
