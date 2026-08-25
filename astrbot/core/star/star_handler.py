@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from astrbot.core.star.filter import HandlerFilter
-from astrbot.core.star.star import star_map
+from astrbot.core.star.star import StarMetadata, star_map
 
 
 class EventType(enum.Enum):
@@ -80,6 +80,89 @@ class StarHandlerRegistry:
         self.star_handlers_map: dict[str, StarHandlerMetadata] = {}
         self._handlers: list[StarHandlerMetadata] = []
 
+    def inject_host_commands(
+        self,
+        commands_by_plugin: dict[str, list[dict]],
+        star_meta_by_plugin: dict[str, dict],
+    ) -> None:
+        """注入宿主全部插件的命令为虚拟 handler（helps 类插件跨进程枚举指令）。
+
+        子进程架构下每个插件独立进程，本进程注册表只含自己的 handler；
+        helps 类插件遍历注册表收集"全部插件的指令"只能看到自己。这里把
+        宿主经现有 ListStars 通道（每插件带 commands）聚合的全局命令构造为
+        带 `virtual` 标记的虚拟 handler 注入注册表——dispatch 的 Register
+        跳过虚拟条目（不污染管线），helps 类插件遍历时能看到全部指令。
+
+        只在插件注册完成后调用一次（0 运行期开销；命令随插件重载/宿主
+        重启更新）。
+        """
+        from astrbot.core.star.filter.command import CommandFilter
+        from astrbot.core.star.filter.permission import (
+            PermissionType,
+            PermissionTypeFilter,
+        )
+
+        virtual: list[StarHandlerMetadata] = []
+        for plugin_id, descs in (commands_by_plugin or {}).items():
+            if not descs:
+                continue
+            sm = star_meta_by_plugin.get(plugin_id) or {}
+            module_path = "data.plugins." + plugin_id
+            if module_path not in star_map:
+                display_name = str(
+                    sm.get("display_name") or sm.get("name") or plugin_id
+                )
+                star_map[module_path] = StarMetadata(
+                    name=display_name,
+                    display_name=display_name,
+                    desc=str(sm.get("desc") or ""),
+                    activated=True,
+                )
+            for d in descs:
+                if not isinstance(d, dict) or not d.get("enabled", True):
+                    continue
+                cmd = str(d.get("command") or "")
+                if not cmd or d.get("command_type") == "group":
+                    continue
+                aliases = set(d.get("aliases") or [])
+                parents = (
+                    [str(d["parent_group"])] if d.get("parent_group") else []
+                )
+                filters: list = [
+                    CommandFilter(
+                        cmd,
+                        alias=aliases,
+                        parent_command_names=parents or [""],
+                    )
+                ]
+                perm = str(d.get("permission") or "")
+                if perm == "admin":
+                    filters.append(PermissionTypeFilter(PermissionType.ADMIN))
+                elif perm == "member":
+                    filters.append(PermissionTypeFilter(PermissionType.MEMBER))
+                virtual.append(
+                    StarHandlerMetadata(
+                        event_type=EventType.AdapterMessageEvent,
+                        handler_full_name=(
+                            "host_virtual_" + plugin_id + "_" + cmd
+                        ),
+                        handler_name=cmd,
+                        handler_module_path=module_path,
+                        handler=lambda *a, **k: None,  # 占位：仅被 metadata 读取
+                        event_filters=filters,
+                        desc=str(d.get("description") or ""),
+                        extras_configs={"virtual": True},
+                        enabled=True,
+                    )
+                )
+        keep = [
+            h
+            for h in self._handlers
+            if not h.extras_configs.get("virtual")
+        ]
+        keep.extend(virtual)
+        self.replace_all(keep)
+
     def append(self, handler: StarHandlerMetadata) -> None:
         if "priority" not in handler.extras_configs:
             handler.extras_configs["priority"] = 0
@@ -130,3 +213,8 @@ class StarHandlerRegistry:
 
 star_handlers_registry = StarHandlerRegistry()
 """全局 Star Handler 注册表"""
+
+
+def is_virtual_handler(md: StarHandlerMetadata) -> bool:
+    """虚拟（宿主全局命令）handler 标记。"""
+    return bool(md.extras_configs.get("virtual"))

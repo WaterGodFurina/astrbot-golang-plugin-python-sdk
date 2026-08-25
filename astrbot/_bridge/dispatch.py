@@ -25,8 +25,11 @@ from astrbot.core.provider.entities import (
 from astrbot.core.star.filter.command import CommandFilter
 from astrbot.core.star.filter.custom_filter import CustomFilter
 from astrbot.core.star.filter.permission import PermissionType, PermissionTypeFilter
-from astrbot.core.star.host_commands import is_virtual_handler, sync_host_commands
-from astrbot.core.star.star_handler import EventType, star_handlers_registry
+from astrbot.core.star.star_handler import (
+    EventType,
+    is_virtual_handler,
+    star_handlers_registry,
+)
 
 logger = logging.getLogger("astrbot.dispatch")
 
@@ -284,6 +287,10 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         self.build_registry()
         logger.info(f"Register: 注册表构建完成（{time.monotonic()-t0:.2f}s, "
                     f"{len(self.commands)} 命令 / {len(self.filter_handlers)} 过滤器 / {len(self.hook_handlers)} 钩子）")
+        # 注册完成后注入宿主全局命令为虚拟 handler（helps 类插件跨进程枚举
+        # 全部插件指令；一次性注入，0 运行期开销，命令随插件重载/宿主重启
+        # 更新）。数据源为现有 ListStars 通道（宿主每插件带 commands）。
+        self._inject_host_commands()
         resp = plugin_pb2.RegisterResponse(
             name=self.plugin_name,
             version=self.plugin_version,
@@ -355,18 +362,44 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         return None, None
 
     def _host_bridge_getter(self):
-        """返回宿主桥（HostBridge）获取器（惰性，供 host_commands 同步）。"""
+        """返回宿主桥（HostBridge）获取器（惰性，供注册后全局命令注入）。"""
         from astrbot._bridge.host import get_bridge
 
         return get_bridge
+
+    def _inject_host_commands(self) -> None:
+        """从宿主 ListStars（现有通道，每插件带 commands）注入全局命令。"""
+        try:
+            stars = self._host_bridge_getter()().list_stars()
+        except Exception as e:
+            logger.debug(f"宿主全局命令注入失败（宿主可能不支持 commands）: {e}")
+            return
+        commands_by_plugin: dict[str, list[dict]] = {}
+        star_meta_by_plugin: dict[str, dict] = {}
+        for s in stars:
+            if not isinstance(s, dict):
+                continue
+            pid = str(s.get("id") or "") or str(s.get("name") or "")
+            if not pid:
+                continue
+            star_meta_by_plugin[pid] = s
+            cmds = s.get("commands")
+            if isinstance(cmds, list):
+                commands_by_plugin[pid] = [
+                    c for c in cmds if isinstance(c, dict)
+                ]
+        if commands_by_plugin:
+            star_handlers_registry.inject_host_commands(
+                commands_by_plugin, star_meta_by_plugin
+            )
 
     def HandleCommand(self, request, context) -> plugin_pb2.HandleCommandResponse:
         if not self._wait_instanced():
             logger.warning("HandleCommand: 插件实例尚未就绪，跳过命令处理")
             return plugin_pb2.HandleCommandResponse()
-        # 刷新宿主全局命令虚拟条目（helps 类插件渲染前经此拿到最新全局指令；
-        # TTL 内不重复拉取）。
-        sync_host_commands(self._host_bridge_getter())
+        # 注意：指令传输路径不触发宿主全局命令同步（零额外开销）——
+        # 同步仅在 star 注册表 _handlers 被读取时惰性发生（helps 类插件
+        # 渲染帮助图时），见 star_handler._maybe_sync_host_commands。
         f, handler = self._find_command(request.name)
         resp = plugin_pb2.HandleCommandResponse()
         if f is None or handler is None:
