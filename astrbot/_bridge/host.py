@@ -655,11 +655,11 @@ class HostBridge:
             return []
 
     # ── 插件/Star 管理 ──────────────────────────────────────────────────────
-    def list_stars(self) -> list[dict]:
+    def get_plugin_registry(self) -> list[dict]:
         if not self.ensure_connected():
             return []
         try:
-            resp = self._stub.ListStars(plugin_pb2.Empty(), timeout=30)
+            resp = self._stub.GetPluginRegistry(plugin_pb2.Empty(), timeout=30)
             out: list[dict] = []
             for raw in resp.stars_json:
                 data = json.loads(raw)
@@ -667,7 +667,7 @@ class HostBridge:
                     out.append(data)
             return out
         except Exception as e:
-            logger.warning(f"ListStars 失败: {e}")
+            logger.warning(f"GetPluginRegistry 失败: {e}")
             return []
 
     def list_platforms(self) -> list[dict]:
@@ -939,8 +939,8 @@ class HostBridge:
         return await asyncio.to_thread(self.get_provider_models, provider_id)
 
     # ── 插件/Star 管理 async ────────────────────────────────────────────────
-    async def list_stars_async(self) -> list[dict]:
-        return await asyncio.to_thread(self.list_stars)
+    async def get_plugin_registry_async(self) -> list[dict]:
+        return await asyncio.to_thread(self.get_plugin_registry)
 
     async def get_star_async(self, name: str) -> dict | None:
         return await asyncio.to_thread(self.get_star, name)

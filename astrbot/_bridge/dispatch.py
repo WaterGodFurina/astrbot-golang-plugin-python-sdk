@@ -289,7 +289,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                     f"{len(self.commands)} 命令 / {len(self.filter_handlers)} 过滤器 / {len(self.hook_handlers)} 钩子）")
         # 注册完成后注入宿主全局命令为虚拟 handler（helps 类插件跨进程枚举
         # 全部插件指令；一次性注入，0 运行期开销，命令随插件重载/宿主重启
-        # 更新）。数据源为现有 ListStars 通道（宿主每插件带 commands）。
+        # 更新）。数据源为现有 GetPluginRegistry 通道（宿主每插件带 commands）。
         self._inject_host_commands()
         resp = plugin_pb2.RegisterResponse(
             name=self.plugin_name,
@@ -368,9 +368,9 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         return get_bridge
 
     def _inject_host_commands(self) -> None:
-        """从宿主 ListStars（现有通道，每插件带 commands）注入全局命令。"""
+        """从宿主 GetPluginRegistry（现有通道，每插件带 commands）注入全局命令。"""
         try:
-            stars = self._host_bridge_getter()().list_stars()
+            stars = self._host_bridge_getter()().get_plugin_registry()
         except Exception as e:
             logger.debug(f"宿主全局命令注入失败（宿主可能不支持 commands）: {e}")
             return

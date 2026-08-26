@@ -371,7 +371,7 @@ class Context:
         from astrbot.core.star.star_manager import StarInfo
 
         try:
-            raw = self._bridge().list_stars()
+            raw = self._bridge().get_plugin_registry()
         except Exception as e:
             logger.warning(f"get_all_stars 失败: {e}")
             return []

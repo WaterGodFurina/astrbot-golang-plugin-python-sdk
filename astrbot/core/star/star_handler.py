@@ -89,7 +89,7 @@ class StarHandlerRegistry:
 
         子进程架构下每个插件独立进程，本进程注册表只含自己的 handler；
         helps 类插件遍历注册表收集"全部插件的指令"只能看到自己。这里把
-        宿主经现有 ListStars 通道（每插件带 commands）聚合的全局命令构造为
+        宿主经现有 GetPluginRegistry 通道（每插件带 commands）聚合的全局命令构造为
         带 `virtual` 标记的虚拟 handler 注入注册表——dispatch 的 Register
         跳过虚拟条目（不污染管线），helps 类插件遍历时能看到全部指令。
 

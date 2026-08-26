@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-from . import plugin_pb2 as plugin__pb2
+import plugin_pb2 as plugin__pb2
 
 GRPC_GENERATED_VERSION = '1.83.0'
 GRPC_VERSION = grpc.__version__
@@ -838,8 +838,8 @@ class HostServiceStub:
                 request_serializer=plugin__pb2.GetProviderModelsRequest.SerializeToString,
                 response_deserializer=plugin__pb2.ProviderModelsResponse.FromString,
                 _registered_method=True)
-        self.ListStars = channel.unary_unary(
-                '/astrbot.sdk.v1.HostService/ListStars',
+        self.GetPluginRegistry = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/GetPluginRegistry',
                 request_serializer=plugin__pb2.Empty.SerializeToString,
                 response_deserializer=plugin__pb2.StarsResponse.FromString,
                 _registered_method=True)
@@ -1079,7 +1079,7 @@ class HostServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def ListStars(self, request, context):
+    def GetPluginRegistry(self, request, context):
         """── 插件/Star 管理（对齐 Python AstrBot star_manager）──
         列出全部已安装插件（Star 元数据）。
         """
@@ -1289,8 +1289,8 @@ def add_HostServiceServicer_to_server(servicer, server):
                     request_deserializer=plugin__pb2.GetProviderModelsRequest.FromString,
                     response_serializer=plugin__pb2.ProviderModelsResponse.SerializeToString,
             ),
-            'ListStars': grpc.unary_unary_rpc_method_handler(
-                    servicer.ListStars,
+            'GetPluginRegistry': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetPluginRegistry,
                     request_deserializer=plugin__pb2.Empty.FromString,
                     response_serializer=plugin__pb2.StarsResponse.SerializeToString,
             ),
@@ -2032,7 +2032,7 @@ class HostService:
             _registered_method=True)
 
     @staticmethod
-    def ListStars(request,
+    def GetPluginRegistry(request,
             target,
             options=(),
             channel_credentials=None,
@@ -2045,7 +2045,7 @@ class HostService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/astrbot.sdk.v1.HostService/ListStars',
+            '/astrbot.sdk.v1.HostService/GetPluginRegistry',
             plugin__pb2.Empty.SerializeToString,
             plugin__pb2.StarsResponse.FromString,
             options,

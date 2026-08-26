@@ -5,7 +5,7 @@
 都在 Go 宿主侧（SetPluginEnabled/InstallPlugin/UninstallPlugin RPC），
 本模块只负责转发与错误包装。
 
-同时提供 `StarInfo`：包装宿主 ListStars/GetStar 返回的插件元数据 dict，
+同时提供 `StarInfo`：包装宿主 GetPluginRegistry/GetStar 返回的插件元数据 dict，
 插件侧按属性访问（plugin.name / plugin.author / plugin.desc /
 plugin.activated / plugin.module_path / plugin.version）。
 """
