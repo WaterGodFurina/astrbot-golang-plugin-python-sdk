@@ -14,33 +14,15 @@ import logging
 import os
 import shutil
 import tempfile
-import urllib.request
 import uuid
 from pathlib import Path, PurePosixPath
 
 from astrbot.core.file_token_service import file_token_service  # noqa: F401（re-export）
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path  # noqa: F401（re-export）
+from astrbot.core.utils.io import download_file  # noqa: F401（re-export）
+from astrbot.core.utils.io import _download_to_temp  # noqa: F401（re-export）
 
 logger = logging.getLogger("astrbot")
-
-
-async def download_file(url: str, save_path: str | None = None) -> str:
-    """下载 url 到本地文件（Go 宿主兼容运行时）。
-
-    对齐原版 `astrbot.core.utils.io.download_file` 的调用习惯：
-    - 未指定 save_path 时下载到系统临时目录，返回临时文件路径；
-    - 下载失败不抛异常，返回空字符串（插件可据此判断失败）。
-    """
-    try:
-        tmp = await asyncio.to_thread(_download_to_temp, url)
-    except Exception as e:
-        logger.warning(f"download_file 失败: {url!r} ({e})")
-        return ""
-    if save_path is None:
-        return tmp
-    os.makedirs(os.path.dirname(os.path.abspath(save_path)) or ".", exist_ok=True)
-    shutil.move(tmp, save_path)
-    return save_path
 
 
 class ComponentType(str, enum.Enum):
@@ -82,35 +64,6 @@ def file_uri_to_path(uri: str) -> str:
     if parsed.netloc and parsed.netloc not in ("", "localhost"):
         path = f"//{parsed.netloc}{path}"
     return path
-
-
-def _download_to_temp(url: str, suffix: str = "") -> str:
-    """把 http(s) 媒体下载到临时文件，返回本地路径。
-
-    分块流式写入（64KB/块），避免整段响应一次性载入内存（大文件/慢
-    链接会显著膨胀内存占用）。另：显式构建 ProxyHandler opener 读取
-    环境代理（http_proxy/https_proxy/all_proxy 等），与 Python 本体
-    aiohttp trust_env=True 语义对齐——urllib 默认未必走系统代理。
-    """
-    os.makedirs(tempfile.gettempdir(), exist_ok=True)
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    tmp.close()
-    # 显式带 ProxyHandler 的 opener：走环境变量代理；无代理环境等同默认行为。
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler())
-    try:
-        with opener.open(url, timeout=30) as resp, open(tmp.name, "wb") as f:
-            while True:
-                chunk = resp.read(64 * 1024)
-                if not chunk:
-                    break
-                f.write(chunk)
-        return tmp.name
-    except Exception:
-        try:
-            os.remove(tmp.name)
-        except OSError:
-            pass
-        raise
 
 
 _DOWNLOAD_EXECUTOR: concurrent.futures.ThreadPoolExecutor | None = None
