@@ -144,7 +144,16 @@ class Dyn(Star):
         svc.mark_ready()
         from astrbot._bridge.dispatch import star_handlers_registry as _s  # noqa
 
-        resp = svc.Register(None, None)
+        # 无宿主环境：Register 内 _inject_host_commands 会经 HostBridge
+        # 拉取宿主全局命令，桥未连接时 dial 重试 20 次（8s 超时 × 20）导致
+        # 测试挂起 160s。mock get_bridge 返回空注册表，仅验证注册收集。
+        from unittest import mock
+
+        fake_bridge = mock.MagicMock()
+        fake_bridge.ensure_connected.return_value = True
+        fake_bridge.get_plugin_registry.return_value = []
+        with mock.patch("astrbot._bridge.host.get_bridge", return_value=fake_bridge):
+            resp = svc.Register(None, None)
         names = {c.name for c in resp.commands}
         self.assertIn("dc", names)
         tools = {t.name for t in resp.tools}
@@ -386,6 +395,12 @@ class TestPlatformBotProxy(unittest.TestCase):
         # 下划线开头 → 明确 AttributeError（不落入动态转发）
         with self.assertRaises(AttributeError):
             self.proxy._internal_secret
+        # 对齐 CQHttp 排除项：api/send/run/config/context 等非 OneBot action
+        # 名称不得被误转发成宿主 action（否则宿主会收到 "api" 这类垃圾 action）
+        for name in ("api", "send", "run", "config", "context", "call_api"):
+            with self.subTest(name=name):
+                with self.assertRaises(AttributeError):
+                    getattr(self.proxy, name)
 
     def test_call_action_reaches_bridge(self):
         import asyncio
@@ -397,6 +412,68 @@ class TestPlatformBotProxy(unittest.TestCase):
         self.assertEqual(
             self.calls,
             [("aiocqhttp_main", "set_group_ban", {"group_id": 1, "user_id": 2, "duration": 30})],
+        )
+
+
+class TestAiocqhttpPlatformStub(unittest.TestCase):
+    """_AiocqhttpPlatformStub 的 isinstance 兼容（跨进程平台占位对齐原版类型）。
+
+    覆盖：插件 `isinstance(inst, AiocqhttpAdapter)` 命中、metadata 可读、
+    get_client 返回 _PlatformBotProxy、非 aiocqhttp 平台仍用通用 _PlatformStub。
+    """
+
+    def test_isinstance_aiocqhttp_adapter(self):
+        from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_platform_adapter import (
+            AiocqhttpAdapter,
+        )
+        from astrbot.core.star.context import _AiocqhttpPlatformStub
+
+        stub = _AiocqhttpPlatformStub(
+            {"id": "aiocqhttp_main", "type": "aiocqhttp", "name": "aiocqhttp"}
+        )
+        self.assertIsInstance(stub, AiocqhttpAdapter)
+        self.assertEqual(stub.metadata.id, "aiocqhttp_main")
+        self.assertEqual(stub.meta().type, "aiocqhttp")
+        client = stub.get_client()
+        self.assertEqual(client._platform_id, "aiocqhttp_main")
+
+    def test_platform_stub_selector(self):
+        from astrbot.core.star.context import (
+            _AiocqhttpPlatformStub,
+            _PlatformManagerStub,
+            _PlatformStub,
+        )
+
+        pm = _PlatformManagerStub()
+        meta_list = [
+            {"id": "a1", "type": "aiocqhttp", "name": "aiocqhttp"},
+            {"id": "w1", "type": "webchat", "name": "webchat"},
+        ]
+
+        class FakeBridge:
+            def ensure_connected(self):
+                return True
+
+            def list_platforms(self):
+                return meta_list
+
+        import astrbot.core.star.context as ctx_mod
+
+        old = ctx_mod.get_host_bridge
+        ctx_mod.get_host_bridge = lambda: FakeBridge()
+        try:
+            insts = pm.get_insts()
+        finally:
+            ctx_mod.get_host_bridge = old
+
+        self.assertEqual(len(insts), 2)
+        self.assertIsInstance(insts[0], _AiocqhttpPlatformStub)
+        self.assertIsInstance(insts[0], _PlatformStub)
+        # 非 aiocqhttp 平台保持通用 stub（不误判为 aiocqhttp）
+        self.assertIsInstance(insts[1], _PlatformStub)
+        self.assertNotIsInstance(
+            insts[1],
+            _AiocqhttpPlatformStub,
         )
 
 

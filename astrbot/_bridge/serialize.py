@@ -211,7 +211,10 @@ def result_to_json(result: MessageEventResult | str | None) -> list[dict]:
     if isinstance(result, str):
         return [{"type": "Plain", "text": result}], False
     if isinstance(result, MessageEventResult):
-        stop = bool(result.result_type and str(getattr(result.result_type, "value", "")) == "stop")
+        # 直接走 is_stopped()：EventResultType 为 enum.Enum（auto() 值为整数），
+        # 用 str(result_type.value) == "stop" 判断恒 False，导致 stop_event()
+        # 的结果被误判为未停止（回归测试 test_result_to_json 覆盖）。
+        stop = result.is_stopped()
         return [component_to_json(c) for c in (result.chain or [])], stop
     if isinstance(result, dict):
         return [result], False

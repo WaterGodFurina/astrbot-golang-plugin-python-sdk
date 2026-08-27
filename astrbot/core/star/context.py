@@ -26,6 +26,9 @@ from astrbot.core.platform import Platform
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.message_session import MessageSesion
 from astrbot.core.platform.message_type import MessageType
+from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_platform_adapter import (
+    AiocqhttpAdapter,
+)
 from astrbot.core.provider.entities import LLMResponse, ProviderRequest, ProviderType
 from astrbot.core.provider.func_tool_manager import FunctionTool, FunctionToolManager
 from astrbot.core.provider.manager import ProviderManager
@@ -171,7 +174,15 @@ class _PlatformBotProxy:
         client.set_group_whole_ban(...)、client.get_login_info(...)
         等任意 OneBot action。
         """
-        if action.startswith("_") or action == "call_action":
+        if action.startswith("_") or action in (
+            "call_action",
+            "call_api",
+            "api",
+            "send",
+            "run",
+            "config",
+            "context",
+        ):
             raise AttributeError(action)
 
         async def _call(**params) -> Any:
@@ -240,6 +251,26 @@ class _PlatformStub:
         }
 
 
+class _AiocqhttpPlatformStub(_PlatformStub, AiocqhttpAdapter):
+    """aiocqhttp 平台实例占位（isinstance 兼容原版同进程类型）。
+
+    跨进程架构下宿主平台对象无法直接传给插件进程，本类在 _PlatformStub
+    的基础上多继承 AiocqhttpAdapter，使插件的
+    `isinstance(inst, AiocqhttpAdapter)`（如 qqadmin 宵禁/禁言初始化）恒
+    命中，无需插件按 Go 跨进程架构改写类型判断。
+
+    注意 MRO：_PlatformStub 在前，__init__ 链走 _PlatformStub（无
+    super().__init__()，不触发 Platform 的 ABC 构造签名）；AiocqhttpAdapter
+    仅为 isinstance/类型标注服务，其元数据能力由 _PlatformStub 提供。
+    """
+
+    def __init__(self, meta: dict) -> None:
+        # 直接调用 _PlatformStub.__init__（不走 super 链，避免 MRO 里
+        # Platform.__init__(config, event_queue) 与 _PlatformStub.__init__(meta)
+        # 的签名冲突）。
+        _PlatformStub.__init__(self, meta)
+
+
 class _PlatformManagerStub:
     """PlatformManager 兼容封装（Go 宿主跨进程）。
 
@@ -268,7 +299,15 @@ class _PlatformManagerStub:
         for meta in raw:
             if not isinstance(meta, dict):
                 continue
-            stub = _PlatformStub(meta)
+            # aiocqhttp 平台构造 _AiocqhttpPlatformStub（isinstance(inst,
+            # AiocqhttpAdapter) 命中，对齐原版同进程类型语义）；其余平台
+            # 用通用 _PlatformStub。
+            stub_cls = (
+                _AiocqhttpPlatformStub
+                if str(meta.get("type") or meta.get("name") or "") == "aiocqhttp"
+                else _PlatformStub
+            )
+            stub = stub_cls(meta)
             insts.append(stub)
             if stub._meta.id:
                 self.platform_insts_map[stub._meta.id] = stub
