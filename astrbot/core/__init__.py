@@ -24,3 +24,28 @@ from astrbot.core.utils.html_renderer import html_renderer  # noqa: E402
 
 # sp：共享偏好存储（对齐本体 `from astrbot.core import sp`）
 from astrbot.core.utils.shared_preferences import sp  # noqa: E402
+
+# AstrBotConfig：配置类（对齐本体 `from astrbot.core import AstrBotConfig`；
+# 插件常据此构造/访问插件配置）
+from astrbot.core.config import AstrBotConfig  # noqa: E402
+
+# FileTokenService / file_token_service：文件令牌服务（对齐本体导出）
+from astrbot.core.file_token_service import (  # noqa: E402
+    FileTokenService,
+    file_token_service,
+)
+
+# LogManager：插件日志管理器（对齐本体 `from astrbot.core import LogManager`）
+from astrbot.core.log import LogManager  # noqa: E402
+
+# SharedPreferences：共享偏好存储类（对齐本体导出）
+from astrbot.core.utils.shared_preferences import SharedPreferences  # noqa: E402
+
+# HtmlRenderer：HTML 渲染器类（对齐本体导出）
+from astrbot.core.utils.html_renderer import HtmlRenderer  # noqa: E402
+
+# RequirementsPrecheckFailed：插件依赖预检异常（对齐本体导出）
+from astrbot.core.utils.requirements_utils import RequirementsPrecheckFailed  # noqa: E402
+
+# get_astrbot_data_path：数据目录解析（对齐本体导出）
+from astrbot.core.utils.astrbot_path import get_astrbot_data_path  # noqa: E402
