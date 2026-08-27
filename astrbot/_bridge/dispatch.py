@@ -189,9 +189,11 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         self.lifecycle.mark_instanced()
 
     def _wait_instanced(self) -> bool:
-        from astrbot._bridge.loader import INIT_TIMEOUT
-
-        return self.lifecycle._wait_instanced(timeout=INIT_TIMEOUT + 5)
+        # 实例化就绪等待：必须小于宿主的 RPC 超时（pluginHookRPCTimeout
+        # = 30s），否则实例化失败/卡住的插件会让钩子/命令 RPC 被宿主
+        # 先超时（DeadlineExceeded 噪音）。15s 内实例化完成即放行；未
+        # 完成（失败/慢）快速返回 False，宿主跳过该插件。
+        return self.lifecycle._wait_instanced(timeout=15.0)
 
     # ---- 注册收集 ----
     def _load_config_schema(self) -> dict:
@@ -837,7 +839,14 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         return resp
 
     def HealthCheck(self, request, context) -> plugin_pb2.HealthResponse:
-        return plugin_pb2.HealthResponse(ok=True, version=self.plugin_version)
+        # ok 反映实例化完成状态：宿主 TriggerHookPayload 推送生命周期钩子
+        # （on_platform_loaded 等）前先探测，未实例化（进行中/失败）的插件
+        # 被跳过，避免 RPC 超时（实例化失败时 _wait_instanced 等待 15s 仍
+        # 会超过宿主 30s 超时的一半，且失败插件推送钩子无意义）。
+        from astrbot._bridge.state import LifecycleStateMachine
+
+        ready = self.lifecycle.state() == LifecycleStateMachine.RUNNING
+        return plugin_pb2.HealthResponse(ok=ready, version=self.plugin_version)
 
     def SetLogLevel(self, request, context) -> plugin_pb2.Empty:
         """调整插件子进程的日志级别（宿主 per-plugin 覆盖）。

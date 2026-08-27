@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from astrbot._bridge import loop
+from astrbot._bridge.path_compat import install as install_path_compat
 from astrbot.core.star.context import Context
 from astrbot.core.star.star import StarMetadata, star_map, star_registry
 
@@ -157,6 +158,10 @@ def load_plugin_import(plugin_dir: str, context: Context) -> StarMetadata | None
     if not os.path.isdir(plugin_dir):
         raise FileNotFoundError(f"插件目录不存在: {plugin_dir}")
 
+    # 硬编码路径兼容：检测插件源码中对旧目录名（无语言后缀）的硬编码引用，
+    # 命中时安装运行时路径重定向（plugins/<name>/ → plugins/<name>_<lang>/）。
+    install_path_compat(plugin_dir)
+
     is_package = os.path.exists(os.path.join(plugin_dir, "__init__.py"))
     has_main_py = os.path.exists(os.path.join(plugin_dir, "main.py"))
 
@@ -262,11 +267,22 @@ def instantiate_plugin(metadata: StarMetadata, context: Context) -> None:
 
     # 实例化：部分插件 __init__(self, context) 不收 config（ragecoop 等）。
     # 对齐 Python 本体 star_manager：先带 config 试，TypeError 回退无 config。
+    # 实例化在常驻 event loop 上执行：插件 __init__ 可能是同步代码，但依赖
+    # 运行中的 loop（如 AsyncIOScheduler.start() 需 get_running_loop()，
+    # qqadmin 宵禁等），gRPC 线程无 loop 会 RuntimeError: no running event loop。
+    def _instantiate(config_arg) -> object:
+        if config_arg is not None and _accepts_config(star_cls):
+            return star_cls(context, config_arg)
+        return star_cls(context)
+
+    async def _instantiate_coro(config_arg) -> object:
+        # async 包装：让 star_cls(...) 在常驻 event loop 线程内同步执行，
+        # 插件 __init__ 依赖的 get_running_loop()（AsyncIOScheduler.start()
+        # 等）可用。
+        return _instantiate(config_arg)
+
     try:
-        if _accepts_config(star_cls):
-            inst = star_cls(context, config)
-        else:
-            inst = star_cls(context)
+        inst = loop.run_coro(_instantiate_coro(config), timeout=INIT_TIMEOUT)
     except TypeError as e:
         # 兜底：签名预检失败等极端情况下保留原文本匹配回退
         if (
@@ -279,7 +295,7 @@ def instantiate_plugin(metadata: StarMetadata, context: Context) -> None:
             f"插件 {metadata.name or metadata.root_dir_name} 的 __init__ 不接受 "
             f"config 参数，回退为仅 context 实例化"
         )
-        inst = star_cls(context)
+        inst = loop.run_coro(_instantiate_coro(None), timeout=INIT_TIMEOUT)
     metadata.star_cls = inst
 
     # 注入 plugin_id（对齐 Python 本体 star_manager 的 setattr）
