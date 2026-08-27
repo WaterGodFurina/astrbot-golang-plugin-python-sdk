@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import json
 import logging
 import os
 import re
@@ -513,6 +514,17 @@ class AstrMessageEvent(abc.ABC):
         obj.message = chain
         obj.message_str = message_str
         obj.raw_message = raw_message
+        # 对齐 Python 本体：raw_message 应为 OneBot 原始事件 dict（插件常
+        # event.message_obj.raw_message.get("notice_type") 等直接当 dict 用，
+        # 如 qqadmin 入群检测）。宿主经 gRPC 传的是 JSON 字符串，需解析；
+        # 解析失败保留原值（插件侧 isinstance(dict) 兜底）。
+        if isinstance(obj.raw_message, str) and obj.raw_message:
+            try:
+                parsed = json.loads(obj.raw_message)
+                if isinstance(parsed, dict):
+                    obj.raw_message = parsed
+            except (ValueError, TypeError):
+                pass
         obj.timestamp = timestamp or int(time())
         if is_group:
             obj.group = Group(group_id=conv_id)
