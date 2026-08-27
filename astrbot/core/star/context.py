@@ -164,6 +164,21 @@ class _PlatformBotProxy:
             raise RuntimeError("宿主桥未就绪，无法调用平台 API")
         return await bridge.call_action_async(self._platform_id, api, params)
 
+    def __getattr__(self, action: str) -> Callable:
+        """将未显式定义的 OneBot API 动态转发到 call_action。
+
+        对齐 CQHttp.__getattr__：插件可以直接调用
+        client.set_group_whole_ban(...)、client.get_login_info(...)
+        等任意 OneBot action。
+        """
+        if action.startswith("_") or action == "call_action":
+            raise AttributeError(action)
+
+        async def _call(**params) -> Any:
+            return await self.call_action(action, **params)
+
+        return _call
+
 
 class _PlatformMetaStub:
     """平台元数据占位（对齐本体 PlatformMetadata 的 id/type/name 访问）。"""

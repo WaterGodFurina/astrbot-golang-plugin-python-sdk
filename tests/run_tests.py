@@ -327,5 +327,78 @@ class TestWebAPI(unittest.TestCase):
         self.assertEqual(svc._serialize_web_result(None).status_code, 200)
 
 
+class TestPlatformBotProxy(unittest.TestCase):
+    """_PlatformBotProxy 动态 OneBot API 转发（__getattr__ → call_action）。
+
+    覆盖：未知 action（set_group_whole_ban 等）转发到
+    call_action(action, **params)；_platform_id / call_action 等
+    已定义属性不被 __getattr__ 拦截。
+    """
+
+    def setUp(self):
+        import astrbot.core.star.context as ctx_mod
+        from astrbot.core.star.context import _PlatformBotProxy
+
+        self.calls = []
+        calls = self.calls
+
+        async def fake_call_action_async(self, platform, api, params):
+            calls.append((platform, api, params))
+            return {}
+
+        bridge = type(
+            "FakeBridge",
+            (),
+            {
+                "ensure_connected": lambda self: True,
+                "call_action_async": fake_call_action_async,
+            },
+        )()
+        ctx_mod.get_host_bridge = lambda: bridge
+        self.proxy = _PlatformBotProxy("aiocqhttp_main")
+
+    def test_dynamic_action_forwarding(self):
+        import asyncio
+
+        async def run():
+            await self.proxy.set_group_whole_ban(group_id=123, enable=True)
+            await self.proxy.get_login_info()
+            await self.proxy.send_group_msg(group_id=456, message="hi")
+
+        asyncio.run(run())
+        self.assertEqual(
+            self.calls,
+            [
+                ("aiocqhttp_main", "set_group_whole_ban", {"group_id": 123, "enable": True}),
+                ("aiocqhttp_main", "get_login_info", {}),
+                ("aiocqhttp_main", "send_group_msg", {"group_id": 456, "message": "hi"}),
+            ],
+        )
+
+    def test_defined_attrs_not_intercepted(self):
+        import asyncio
+
+        # _platform_id：实例属性（不带下划线访问会被 __getattr__ 拦截前
+        # 先命中 __init__ 设置的实例属性，直接返回）
+        self.assertEqual(self.proxy._platform_id, "aiocqhttp_main")
+        # call_action：显式方法，不走 __getattr__
+        self.assertTrue(callable(self.proxy.call_action))
+        # 下划线开头 → 明确 AttributeError（不落入动态转发）
+        with self.assertRaises(AttributeError):
+            self.proxy._internal_secret
+
+    def test_call_action_reaches_bridge(self):
+        import asyncio
+
+        async def run():
+            await self.proxy.call_action("set_group_ban", group_id=1, user_id=2, duration=30)
+
+        asyncio.run(run())
+        self.assertEqual(
+            self.calls,
+            [("aiocqhttp_main", "set_group_ban", {"group_id": 1, "user_id": 2, "duration": 30})],
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
