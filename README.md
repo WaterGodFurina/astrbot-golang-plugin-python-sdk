@@ -109,6 +109,38 @@ python -m grpc_tools.protoc -Iproto \
 Go 侧 gen 由 Go SDK 仓库的 `buf generate` 生成；本仓库的 Python gen 由上面的
 grpc_tools.protoc 生成）、`goplugin.proto`（go-plugin 的 GRPCBroker 服务）。
 
+## 协议与数据路径（P1）
+
+本 SDK 与 Go 宿主之间的事件 / 消息链 / 响应链走 **原生 protobuf data plane**
+（0 次 Event JSON 编解码）。插件层 API（`event.message_str` / `sender_id` /
+`get_messages()` …）保持不变，不感知底层 wire format：
+
+```
+proto SDKEvent（固定字段原生 + repeated Component + metadata_json）
+    ↓
+AstrMessageEvent.from_proto()   ← P1 新增
+    ↓
+插件（AstrMessageEvent）
+```
+
+- **`event_json` / `chain_json` RPC 字段已移除**（P1，与 Go SDK 同步）；
+  `from_event_json` 保留仅用于非 RPC 业务；RPC 入口一律 `from_proto`。
+- **协议版本协商**：`Register` 校验 `protocol_version == P1_PROTOCOL_VERSION`
+  （`2`，见 `astrbot/_bridge/dispatch.py`）。Host 与 SDK 版本不一致 → 明确
+  失败提示升级，无 legacy 回退。
+- **组件原生**：`component_from_proto` / `component_to_proto`（`ComponentType`
+  为 `(str, enum.Enum)`，序列化取 `.value` 得到 `'Plain'` 而非 `'ComponentType.Plain'`）；
+  桥接钩子（aiocqhttp/botpy/telegram）经 `proto_to_event_dict` 转兼容 dict。
+- **动态结构保留 JSON**：`metadata_json`、`data_json`、hook `payload_json`、
+  工具 `args_json`（扩展点）。
+- **二进制路径**：媒体 `base64_data bytes`（内联）或 `BinaryPayload →
+  FileReference`（大文件经宿主 Blob store，宿主 TTL/GC）。
+- `text_to_image` / `html_render` 优先读 `image_bytes`（免 base64），旧宿主
+  回退 `image_base64`。
+
+**版本纪律**：行为不兼容的变更必须 bump `P1_PROTOCOL_VERSION` 与本仓库 tag
+（当前 v0.8.0）。
+
 ## 宿主如何消费本 Go 模块
 
 宿主 `Astrbot-golang` 的 go.mod `require` 本模块（开发态用本地 `replace`），
