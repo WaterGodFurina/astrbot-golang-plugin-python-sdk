@@ -4,6 +4,10 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+
+# P1 协议版本：Event/Component/Chain 原生 protobuf data plane（0 JSON）。
+# SDK 与 Host 必须一致，Register 握手不匹配则明确失败。
+P1_PROTOCOL_VERSION = 2
 import threading
 import time
 from functools import lru_cache
@@ -289,6 +293,15 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         self.build_registry()
         logger.info(f"Register: 注册表构建完成（{time.monotonic()-t0:.2f}s, "
                     f"{len(self.commands)} 命令 / {len(self.filter_handlers)} 过滤器 / {len(self.hook_handlers)} 钩子）")
+        # P1 协议协商：Host 上报的 protocol_version 必须与 SDK 一致（P1 移除
+        # legacy event_json/chain_json，不匹配无法互操作 → 明确失败提示升级）。
+        if request.protocol_version != P1_PROTOCOL_VERSION:
+            context.abort(
+                grpc.StatusCode.FAILED_PRECONDITION,
+                f"protocol version mismatch: Host={request.protocol_version} "
+                f"SDK(P1)={P1_PROTOCOL_VERSION}; please upgrade the SDK or Host "
+                f"to the same protocol version",
+            )
         # 注册完成后注入宿主全局命令为虚拟 handler（helps 类插件跨进程枚举
         # 全部插件指令；一次性注入，0 运行期开销，命令随插件重载/宿主重启
         # 更新）。数据源为现有 GetPluginRegistry 通道（宿主每插件带 commands）。
@@ -299,6 +312,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
             description=self.plugin_desc,
             author=self.plugin_author,
             config_schema_json=json.dumps(self._load_config_schema()).encode(),
+            protocol_version=P1_PROTOCOL_VERSION,
         )
         seen = set()
         for full_name, (f, _) in self.commands.items():
@@ -407,11 +421,10 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         if f is None or handler is None:
             return resp
         try:
-            event_data = json.loads(request.event_json) if request.event_json else {}
+            event = AstrMessageEvent.from_proto(request.event)
         except json.JSONDecodeError as e:
             logger.error(f"HandleCommand: event_json 解析失败: {e}")
             return resp
-        event = AstrMessageEvent.from_event_json(event_data)
         event.is_at_or_wake_command = True
 
         # 参数转换（对齐 Python validate_and_convert_params；宿主已传拆分后的 args）
@@ -459,7 +472,9 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         # stop 会漏掉 → 宿主继续 LLM 兜底（重复回复）。
         stop = stop or event.is_stopped()
         if chain:
-            resp.chain_json = json.dumps(chain).encode()
+            from astrbot._bridge.serialize import component_from_json, component_list_to_proto
+            comps = [component_from_json(d) for d in chain if d]
+            resp.chain.extend(component_list_to_proto(comps))
         resp.stop = stop
         resp.sent = event._has_send_oper
         _set_result(resp, event, stop=stop, handled=True)
@@ -470,11 +485,10 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
             logger.warning("HandleFilter: 插件实例尚未就绪，跳过过滤器")
             return plugin_pb2.HandleFilterResponse(allow=True)
         try:
-            event_data = json.loads(request.event_json) if request.event_json else {}
+            event = AstrMessageEvent.from_proto(request.event)
         except json.JSONDecodeError as e:
             logger.error(f"HandleFilter: event_json 解析失败: {e}")
             return plugin_pb2.HandleFilterResponse(allow=True)
-        event = AstrMessageEvent.from_event_json(event_data)
         for name, handler, inst in self.filter_handlers:
             if name == request.name:
                 # 先跑注册的过滤器（regex / 事件类型 / 平台 / 权限 / 自定义），
@@ -530,14 +544,13 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         喂入）。反序列化事件后经 try_trigger 匹配 USER_SESSIONS 中的等待会话
         并触发其 handler；无匹配返回 handled=False。"""
         try:
-            event_data = json.loads(request.event_json) if request.event_json else {}
+            event = AstrMessageEvent.from_proto(request.event)
         except json.JSONDecodeError as e:
             logger.error(f"FeedSessionWait: event_json 解析失败: {e}")
             return plugin_pb2.FeedSessionWaitResponse(handled=False)
         if not event_data:
             return plugin_pb2.FeedSessionWaitResponse(handled=False)
         try:
-            event = AstrMessageEvent.from_event_json(event_data)
             # try_trigger 是 async 且触碰常驻 loop 上的异步状态（waiter 的
             # future/_lock），必须在常驻 loop 上执行：与 _call 一致走
             # loop.run_coro（run_coroutine_threadsafe），而非 asyncio.run——
@@ -579,7 +592,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                 from aiocqhttp import dispatch as _aiocqhttp_dispatch
 
                 try:
-                    event_data = json.loads(request.event_json) if request.event_json else {}
+                    event = AstrMessageEvent.from_proto(request.event)
                 except json.JSONDecodeError as e:
                     logger.error(f"HandleHook(aiocqhttp): event_json 解析失败: {e}")
                     return resp
@@ -595,7 +608,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                 from botpy import dispatch as _botpy_dispatch
 
                 try:
-                    event_data = json.loads(request.event_json) if request.event_json else {}
+                    event = AstrMessageEvent.from_proto(request.event)
                 except json.JSONDecodeError as e:
                     logger.error(f"HandleHook(botpy): event_json 解析失败: {e}")
                     return resp
@@ -610,7 +623,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                 from telegram import dispatch as _telegram_dispatch
 
                 try:
-                    event_data = json.loads(request.event_json) if request.event_json else {}
+                    event = AstrMessageEvent.from_proto(request.event)
                 except json.JSONDecodeError as e:
                     logger.error(f"HandleHook(telegram): event_json 解析失败: {e}")
                     return resp
@@ -623,30 +636,22 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
             return resp
         event_name, handler, inst = entry
         try:
-            event_data = json.loads(request.event_json) if request.event_json else {}
+            event = AstrMessageEvent.from_proto(request.event)
         except json.JSONDecodeError as e:
             logger.error(f"HandleHook {request.name}: event_json 解析失败: {e}")
             return resp
-        event = AstrMessageEvent.from_event_json(event_data)
 
         if event_name in ("on_decorating_result", "on_result_handling"):
-            chain = []
-            if request.chain_json:
-                try:
-                    chain = json.loads(request.chain_json)
-                except json.JSONDecodeError as e:
-                    logger.error(f"HandleHook {request.name}: chain_json 解析失败: {e}")
-                    chain = []
-            from astrbot._bridge.serialize import component_from_json
+            from astrbot._bridge.serialize import proto_to_component_list
             from astrbot.core.message.components import Unknown
 
-            # 逐个反序列化兜底：单个畸形组件不拖垮整条 chain
+            # 入站链：原生 proto Component（P1，0 JSON），逐个兜底。
             comps = []
-            for c in chain:
+            for c in (request.chain or []):
                 try:
-                    comps.append(component_from_json(c))
+                    comps.append(proto_to_component_list([c])[0])
                 except Exception as e:
-                    logger.warning(f"HandleHook {request.name}: 组件反序列化失败，回退 Unknown: {e}")
+                    logger.warning(f"HandleHook {request.name}: 组件转换失败，回退 Unknown: {e}")
                     comps.append(Unknown(text=""))
             result = MessageEventResult(comps)
             bound = _bind(handler, self.inst)
@@ -667,9 +672,8 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                     from astrbot.core.message.components import Plain
 
                     comps = [Plain(new_result)]
-                resp.chain_json = json.dumps(
-                    [component_to_json_public(c) for c in comps]
-                ).encode()
+                from astrbot._bridge.serialize import component_list_to_proto
+                resp.chain.extend(component_list_to_proto(comps))
                 resp.stop = bool(
                     new_result.result_type == EventResultType.STOP
                 ) if isinstance(new_result, MessageEventResult) else False
@@ -734,11 +738,10 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
             return resp
         _, handler, inst = entry
         try:
-            event_data = json.loads(request.event_json) if request.event_json else {}
+            event = AstrMessageEvent.from_proto(request.event)
         except json.JSONDecodeError as e:
             logger.error(f"HandleLLMRequest {request.name}: event_json 解析失败: {e}")
             return resp
-        event = AstrMessageEvent.from_event_json(event_data)
         req = ProviderRequest(
             prompt=request.user_prompt,
             system_prompt=request.system_prompt,
@@ -781,11 +784,10 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
             entry = (live, self.inst)
         tool, inst = entry
         try:
-            event_data = json.loads(request.event_json) if request.event_json else {}
+            event = AstrMessageEvent.from_proto(request.event)
         except json.JSONDecodeError as e:
             logger.error(f"HandleTool {request.name}: event_json 解析失败: {e}")
             return plugin_pb2.HandleToolResponse(text=f"工具 {request.name} 事件解析失败", is_error=True)
-        event = AstrMessageEvent.from_event_json(event_data)
         args = {}
         if request.args_json:
             try:

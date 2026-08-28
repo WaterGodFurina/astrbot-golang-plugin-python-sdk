@@ -569,3 +569,95 @@ class AstrMessageEvent(abc.ABC):
             event.role = "admin" if is_admin else "member"
         event.is_at_bot = is_at_bot
         return event
+
+    @classmethod
+    def from_proto(cls, event_proto) -> "AstrMessageEvent":
+        """P1：从 proto SDKEvent 直接重建事件（0 JSON wire）。
+
+        固定字段走 protobuf 原生，components 走 proto Component，仅动态
+        metadata 走 metadata_json（一次 JSON）。
+        """
+        import json as _json
+
+        from astrbot._bridge.serialize import proto_to_component_list
+
+        platform = event_proto.platform or ""
+        platform_id = event_proto.platform_id or platform
+        self_id = event_proto.self_id or ""
+        sender_id = event_proto.sender_id or ""
+        sender_name = event_proto.sender_name or ""
+        conv_id = event_proto.conv_id or ""
+        is_group = event_proto.is_group
+        is_at_bot = event_proto.is_at_bot
+        is_admin = event_proto.is_admin
+        message_str = event_proto.message_str or ""
+        plain_text = event_proto.plain_text or ""
+        raw_message = event_proto.raw_message or ""
+        message_id = event_proto.message_id or ""
+        timestamp = event_proto.timestamp or 0
+        metadata = {}
+        if event_proto.metadata_json:
+            try:
+                metadata = _json.loads(bytes(event_proto.metadata_json).decode("utf-8", "replace"))
+                if not isinstance(metadata, dict):
+                    metadata = {}
+            except (ValueError, TypeError):
+                metadata = {}
+
+        msg_type_str = event_proto.message_type or ""
+        if msg_type_str:
+            try:
+                msg_type = MessageType(msg_type_str)
+            except ValueError:
+                msg_type = MessageType.GROUP_MESSAGE if is_group else MessageType.FRIEND_MESSAGE
+        else:
+            msg_type = MessageType.GROUP_MESSAGE if is_group else MessageType.FRIEND_MESSAGE
+
+        chain = proto_to_component_list(event_proto.components)
+
+        obj = AstrBotMessage()
+        obj.type = msg_type
+        obj.self_id = self_id
+        obj.session_id = conv_id
+        obj.message_id = message_id
+        obj.sender = MessageMember(user_id=sender_id, nickname=sender_name)
+        obj.message = chain
+        obj.message_str = message_str
+        obj.raw_message = raw_message
+        if isinstance(obj.raw_message, str) and obj.raw_message:
+            try:
+                parsed = _json.loads(obj.raw_message)
+                if isinstance(parsed, dict):
+                    obj.raw_message = parsed
+            except (ValueError, TypeError):
+                pass
+        obj.timestamp = timestamp or int(time())
+        if is_group:
+            obj.group = Group(group_id=conv_id)
+
+        meta = PlatformMetadata(
+            name=platform,
+            description="",
+            id=platform_id,
+        )
+        if platform == "aiocqhttp":
+            from aiocqhttp import CQHttp
+            from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
+                AiocqhttpMessageEvent,
+            )
+
+            event = AiocqhttpMessageEvent(
+                message_str or plain_text, obj, meta, conv_id, bot=CQHttp.get_default_bot()
+            )
+        else:
+            event = cls(message_str or plain_text, obj, meta, conv_id)
+        event.is_at_or_wake_command = metadata.get("is_at_or_wake_command", False)
+        event.is_wake = metadata.get("is_wake", False)
+        event.call_llm = bool(metadata.get("call_llm", False))
+        raw_role = (metadata or {}).get("role")
+        if raw_role in ("admin", "owner", "member"):
+            event.role = raw_role
+        else:
+            event.role = "admin" if is_admin else "member"
+        event.is_at_bot = is_at_bot
+        return event

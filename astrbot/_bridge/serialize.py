@@ -219,3 +219,189 @@ def result_to_json(result: MessageEventResult | str | None) -> list[dict]:
     if isinstance(result, dict):
         return [result], False
     return [], False
+
+
+# ── P1：proto Component ⇄ Python 组件（native，0 JSON）──
+
+def component_from_proto(c, _depth: int = 0) -> BaseMessageComponent:
+    """把 proto Component（SDKEvent.components / response.chain）还原为
+    Python 组件对象。media 走 base64_data（bytes）→ Base64 string。"""
+    from astrbot.core.message.components import ComponentType
+
+    if c is None:
+        return Unknown(text="")
+    ctype = str(c.type or "Unknown")
+    text = c.text or ""
+    if ctype == "Plain":
+        return Plain(text=text)
+    if ctype == "At":
+        target = c.target_id or ""
+        if target in ("all", "0"):
+            return AtAll()
+        return At(qq=target or "0", name=c.name or "")
+    if ctype == "AtAll":
+        return AtAll()
+    if ctype == "Image":
+        b64 = None
+        if c.base64_data:
+            b64 = base64.b64encode(bytes(c.base64_data)).decode()
+        file_ = c.file or None
+        if not file_ and b64 and not c.url and not c.path:
+            file_ = f"base64://{b64}"
+        return Image(file=file_, url=c.url or None, path=c.path or None)
+    if ctype == "Record":
+        return Record(file=c.file or None, url=c.url or None, path=c.path or None)
+    if ctype == "File":
+        return File(name=c.name or "", file=c.file or c.path or "", url=c.url or "")
+    if ctype == "Video":
+        return Video(file=c.file or c.url or "", url=c.url or None, path=c.path or None)
+    if ctype == "Face":
+        try:
+            face_id = int(c.id or 0)
+        except (TypeError, ValueError):
+            face_id = 0
+        return Face(id=face_id)
+    if ctype == "Emoji":
+        comp = Unknown(text="")
+        comp.type = "Emoji"
+        comp.id = c.id or ""
+        comp.url = c.url or ""
+        return comp
+    if ctype == "Json":
+        import json as _json
+        data = {}
+        if c.data_json:
+            try:
+                data = _json.loads(bytes(c.data_json).decode("utf-8", "replace"))
+            except (ValueError, TypeError):
+                data = {}
+        return Json(data=data or {})
+    if ctype == "Reply":
+        return Reply(id=c.id or "", message_str=c.text or "")
+    if ctype == "Node":
+        if _depth >= _MAX_NODE_DEPTH:
+            return Unknown(text="")
+        import json as _json
+        content = []
+        if c.data_json:
+            try:
+                dd = _json.loads(bytes(c.data_json).decode("utf-8", "replace"))
+                content = [
+                    component_from_proto(comp, _depth + 1)
+                    for comp in (dd or {}).get("content") or []
+                ]
+            except (ValueError, TypeError):
+                content = []
+        return Node(content=content, uin=c.name or "0", name=c.name or "")
+    return Unknown(text=text)
+
+
+def component_to_proto(comp: BaseMessageComponent) -> object:
+    """把 Python 组件转成 proto Component（发送链）。"""
+    import base64 as _b64
+
+    from astrbot._bridge.gen import plugin_pb2
+
+    _t = getattr(comp, "type", "Unknown") or "Unknown"
+    # ComponentType 是 (str, enum.Enum)：str() 会得 'ComponentType.Plain'，
+    # 需取 .value 才得到 wire 上约定的 'Plain'。
+    if hasattr(_t, "value"):
+        ctype = str(_t.value)
+    else:
+        ctype = str(_t)
+    pc = plugin_pb2.Component(type=ctype, text=getattr(comp, "text", "") or "")
+    pc.target_id = getattr(comp, "target_id", "") or ""
+    pc.name = getattr(comp, "name", "") or ""
+    pc.url = getattr(comp, "url", "") or ""
+    pc.path = getattr(comp, "path", "") or ""
+    pc.file = getattr(comp, "file", "") or ""
+    pc.id = str(getattr(comp, "id", "") or "")
+    if getattr(comp, "type", "") == "Json":
+        import json as _json
+        data = getattr(comp, "data", None)
+        if data:
+            pc.data_json = _json.dumps(data, ensure_ascii=False).encode()
+    if ctype in ("Image", "Record"):
+        # 优先 url/path，其次 base64/file。
+        raw = getattr(comp, "file", "") or getattr(comp, "path", "") or ""
+        if raw.startswith("base64://"):
+            try:
+                pc.base64_data = _b64.b64decode(raw[len("base64://"):])
+            except Exception:
+                pc.base64_data = b""
+        elif raw and "://" not in raw:
+            # data URI 或本地路径
+            if raw.startswith("data:"):
+                try:
+                    pc.base64_data = _b64.b64decode(raw.split(";base64,", 1)[1])
+                except Exception:
+                    pc.base64_data = b""
+            else:
+                pc.path = raw
+    return pc
+
+
+def proto_to_component_list(proto_list) -> list:
+    """proto repeated Component → Python 组件列表（事件链/响应链通用）。"""
+    return [component_from_proto(c) for c in (proto_list or [])]
+
+
+def component_list_to_proto(comps) -> list:
+    """Python 组件列表 → proto Component 列表（发送链/响应链通用）。"""
+    return [component_to_proto(c) for c in (comps or [])]
+
+
+def proto_to_event_dict(event_proto) -> dict:
+    """P1：把 proto SDKEvent 转成桥接层（botpy/telegram 兼容钩子）所需的
+    dict。仅兼容层内部使用，非 RPC wire 序列化。"""
+    import base64 as _b64
+    import json as _json
+
+    chain = []
+    for c in (event_proto.components or []):
+        d = {
+            "type": c.type or "Unknown",
+            "text": c.text or "",
+            "target_id": c.target_id or "",
+            "name": c.name or "",
+            "url": c.url or "",
+            "path": c.path or "",
+            "file": c.file or "",
+            "file_id": c.file_id or "",
+            "id": c.id or "",
+        }
+        if c.base64_data:
+            d["base64"] = _b64.b64encode(bytes(c.base64_data)).decode()
+        if c.data_json:
+            try:
+                d["data"] = _json.loads(bytes(c.data_json).decode("utf-8", "replace"))
+            except (ValueError, TypeError):
+                d["data"] = {}
+        chain.append(d)
+    metadata = {}
+    if event_proto.metadata_json:
+        try:
+            metadata = _json.loads(bytes(event_proto.metadata_json).decode("utf-8", "replace"))
+        except (ValueError, TypeError):
+            metadata = {}
+    return {
+        "type": event_proto.type or "",
+        "platform": event_proto.platform or "",
+        "platform_id": event_proto.platform_id or "",
+        "message_type": event_proto.message_type or "",
+        "self_id": event_proto.self_id or "",
+        "sender_id": event_proto.sender_id or "",
+        "sender_name": event_proto.sender_name or "",
+        "conv_id": event_proto.conv_id or "",
+        "group_name": event_proto.group_name or "",
+        "is_group": event_proto.is_group,
+        "is_at_bot": event_proto.is_at_bot,
+        "is_admin": event_proto.is_admin,
+        "message_str": event_proto.message_str or "",
+        "plain_text": event_proto.plain_text or "",
+        "raw_message": event_proto.raw_message or "",
+        "message_id": event_proto.message_id or "",
+        "timestamp": event_proto.timestamp or 0,
+        "metadata": metadata,
+        "chain": chain,
+    }

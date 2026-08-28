@@ -893,6 +893,26 @@ class HostServiceStub:
                 request_serializer=plugin__pb2.BridgeHookRequest.SerializeToString,
                 response_deserializer=plugin__pb2.Empty.FromString,
                 _registered_method=True)
+        self.CreateBlob = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/CreateBlob',
+                request_serializer=plugin__pb2.CreateBlobRequest.SerializeToString,
+                response_deserializer=plugin__pb2.CreateBlobResponse.FromString,
+                _registered_method=True)
+        self.ReadBlob = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/ReadBlob',
+                request_serializer=plugin__pb2.ReadBlobRequest.SerializeToString,
+                response_deserializer=plugin__pb2.ReadBlobResponse.FromString,
+                _registered_method=True)
+        self.GetBlobInfo = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/GetBlobInfo',
+                request_serializer=plugin__pb2.GetBlobInfoRequest.SerializeToString,
+                response_deserializer=plugin__pb2.GetBlobInfoResponse.FromString,
+                _registered_method=True)
+        self.ReleaseBlob = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/ReleaseBlob',
+                request_serializer=plugin__pb2.ReleaseBlobRequest.SerializeToString,
+                response_deserializer=plugin__pb2.Empty.FromString,
+                _registered_method=True)
 
 
 class HostServiceServicer:
@@ -1161,6 +1181,35 @@ class HostServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def CreateBlob(self, request, context):
+        """── 大文件 Blob 存储（P0-2）──────────────────────────────
+        插件把大于 inline 阈值（1MB）的二进制交给宿主持久化，拿到一个受控
+        handle；后续经 ReadBlob 分块读取。宿主统一管理生命周期（TTL/GC），
+        插件只传 handle，绝不传任意文件路径（防路径穿越）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReadBlob(self, request, context):
+        """ReadBlob 按 offset/limit 分块读，避免单次大缓冲。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetBlobInfo(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReleaseBlob(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_HostServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -1342,6 +1391,26 @@ def add_HostServiceServicer_to_server(servicer, server):
             'UnregisterBridgeHook': grpc.unary_unary_rpc_method_handler(
                     servicer.UnregisterBridgeHook,
                     request_deserializer=plugin__pb2.BridgeHookRequest.FromString,
+                    response_serializer=plugin__pb2.Empty.SerializeToString,
+            ),
+            'CreateBlob': grpc.unary_unary_rpc_method_handler(
+                    servicer.CreateBlob,
+                    request_deserializer=plugin__pb2.CreateBlobRequest.FromString,
+                    response_serializer=plugin__pb2.CreateBlobResponse.SerializeToString,
+            ),
+            'ReadBlob': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReadBlob,
+                    request_deserializer=plugin__pb2.ReadBlobRequest.FromString,
+                    response_serializer=plugin__pb2.ReadBlobResponse.SerializeToString,
+            ),
+            'GetBlobInfo': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetBlobInfo,
+                    request_deserializer=plugin__pb2.GetBlobInfoRequest.FromString,
+                    response_serializer=plugin__pb2.GetBlobInfoResponse.SerializeToString,
+            ),
+            'ReleaseBlob': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReleaseBlob,
+                    request_deserializer=plugin__pb2.ReleaseBlobRequest.FromString,
                     response_serializer=plugin__pb2.Empty.SerializeToString,
             ),
     }
@@ -2317,6 +2386,114 @@ class HostService:
             target,
             '/astrbot.sdk.v1.HostService/UnregisterBridgeHook',
             plugin__pb2.BridgeHookRequest.SerializeToString,
+            plugin__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CreateBlob(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/CreateBlob',
+            plugin__pb2.CreateBlobRequest.SerializeToString,
+            plugin__pb2.CreateBlobResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReadBlob(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/ReadBlob',
+            plugin__pb2.ReadBlobRequest.SerializeToString,
+            plugin__pb2.ReadBlobResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetBlobInfo(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/GetBlobInfo',
+            plugin__pb2.GetBlobInfoRequest.SerializeToString,
+            plugin__pb2.GetBlobInfoResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReleaseBlob(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/ReleaseBlob',
+            plugin__pb2.ReleaseBlobRequest.SerializeToString,
             plugin__pb2.Empty.FromString,
             options,
             channel_credentials,

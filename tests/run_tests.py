@@ -153,7 +153,8 @@ class Dyn(Star):
         fake_bridge.ensure_connected.return_value = True
         fake_bridge.get_plugin_registry.return_value = []
         with mock.patch("astrbot._bridge.host.get_bridge", return_value=fake_bridge):
-            resp = svc.Register(None, None)
+            from astrbot._bridge.gen import plugin_pb2
+            resp = svc.Register(plugin_pb2.RegisterRequest(protocol_version=2), None)
         names = {c.name for c in resp.commands}
         self.assertIn("dc", names)
         tools = {t.name for t in resp.tools}
@@ -479,3 +480,68 @@ class TestAiocqhttpPlatformStub(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestProtoEvent(unittest.TestCase):
+    """P1：proto SDKEvent → Python Event 语义等价 + proto Component 往返。"""
+
+    def test_component_proto_roundtrip(self):
+        from astrbot._bridge.gen import plugin_pb2
+        from astrbot._bridge.serialize import component_from_proto, component_to_proto, proto_to_component_list
+        from astrbot.core.message.components import At, AtAll, Image, Json, Plain
+
+        cases = [
+            Plain(text="hi"),
+            At(qq="123", name="u"),
+            AtAll(),
+            Image(file="base64://aGk="),
+            Image(url="https://x/y.png"),
+            Json(data={"app": "test", "n": 1}),
+        ]
+        for c in cases:
+            pc = component_to_proto(c)
+            back = component_from_proto(pc)
+            self.assertEqual(str(back.type.value if hasattr(back.type, "value") else back.type),
+                             str(c.type.value if hasattr(c.type, "value") else c.type),
+                             f"type mismatch for {c}")
+            if isinstance(c, Plain):
+                self.assertEqual(back.text, "hi")
+            elif isinstance(c, At) and c.qq != "all":
+                self.assertEqual(back.qq, "123")
+            elif isinstance(c, Json):
+                self.assertEqual(back.data.get("app"), "test")
+
+    def test_from_proto_semantics(self):
+        import json as _json
+
+        from astrbot._bridge.gen import plugin_pb2
+        from astrbot.core.platform.astr_message_event import AstrMessageEvent
+
+        se = plugin_pb2.SDKEvent(
+            type="message", platform="test", platform_id="p1",
+            message_type="GroupMessage", self_id="self", sender_id="u1",
+            sender_name="alice", conv_id="g1", group_name="g",
+            is_group=True, is_at_bot=True, is_admin=False,
+            message_str="hello world", plain_text="hello world",
+            raw_message=_json.dumps({"notice_type": "x"}).encode(),
+            message_id="m1", timestamp=1700000000,
+            metadata_json=_json.dumps({"role": "admin", "foo": "bar"}).encode(),
+            components=[plugin_pb2.Component(type="Plain", text="hi"),
+                        plugin_pb2.Component(type="At", target_id="u2", name="bob")],
+        )
+        ev = AstrMessageEvent.from_proto(se)
+        self.assertEqual(ev.message_str, "hello world")
+        self.assertEqual(ev.sender_id, "u1")
+        self.assertEqual(ev.sender_name, "alice")
+        self.assertTrue(ev.is_group)
+        self.assertTrue(ev.is_at_bot)
+        self.assertFalse(ev.is_admin)
+        self.assertEqual(ev.role, "admin")
+        self.assertEqual(ev.message_id, "m1")
+        # raw_message 解析为 dict
+        self.assertIsInstance(ev.raw_message, dict)
+        self.assertEqual(ev.raw_message.get("notice_type"), "x")
+        # components
+        msgs = ev.get_messages() or []
+        self.assertEqual(len(msgs), 2)
+        self.assertEqual(str(msgs[0].type.value if hasattr(msgs[0].type, "value") else msgs[0].type), "Plain")

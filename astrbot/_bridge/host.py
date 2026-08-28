@@ -234,6 +234,9 @@ class HostBridge:
             plugin_pb2.TextToImageRequest(text=text, template_name=template_name),
             timeout=120,
         )
+        # P0-1：优先读 image_bytes（免 base64）；旧宿主只填 image_base64 时回退。
+        if resp.image_bytes:
+            return bytes(resp.image_bytes)
         import base64
 
         return base64.b64decode(resp.image_base64)
@@ -248,9 +251,75 @@ class HostBridge:
             ),
             timeout=120,
         )
+        # P0-1：优先读 image_bytes（免 base64）；旧宿主只填 image_base64 时回退。
+        if resp.image_bytes:
+            return bytes(resp.image_bytes)
         import base64
 
         return base64.b64decode(resp.image_base64)
+
+    def create_blob(self, data: bytes, mime_type: str = "", filename: str = "", ttl_seconds: int = 0) -> dict:
+        """把大二进制交予宿主持久化，返回 FileReference（handle 制，宿主 TTL/GC）。"""
+        if not self.ensure_connected():
+            raise RuntimeError("宿主桥未就绪（CreateBlob 不可用）")
+        resp = self._stub.CreateBlob(
+            plugin_pb2.CreateBlobRequest(
+                data=data,
+                mime_type=mime_type,
+                filename=filename,
+                ttl_seconds=ttl_seconds,
+            ),
+            timeout=180,
+        )
+        f = resp.file
+        return {
+            "handle_id": f.handle_id,
+            "size": f.size,
+            "mime_type": f.mime_type,
+            "filename": f.filename,
+            "expires_at": f.expires_at,
+        }
+
+    def read_blob(self, handle_id: str, offset: int = 0, limit: int = 0) -> bytes:
+        """分块读取宿主 blob（limit<=0 用宿主默认块 1MB）。"""
+        if not self.ensure_connected():
+            raise RuntimeError("宿主桥未就绪（ReadBlob 不可用）")
+        resp = self._stub.ReadBlob(
+            plugin_pb2.ReadBlobRequest(handle_id=handle_id, offset=offset, limit=limit),
+            timeout=180,
+        )
+        return bytes(resp.data)
+
+    def get_blob_info(self, handle_id: str) -> dict:
+        """返回 blob 元数据。"""
+        if not self.ensure_connected():
+            raise RuntimeError("宿主桥未就绪（GetBlobInfo 不可用）")
+        resp = self._stub.GetBlobInfo(
+            plugin_pb2.GetBlobInfoRequest(handle_id=handle_id),
+            timeout=30,
+        )
+        f = resp.file
+        return {
+            "handle_id": f.handle_id,
+            "size": f.size,
+            "mime_type": f.mime_type,
+            "filename": f.filename,
+            "expires_at": f.expires_at,
+        }
+
+    def release_blob(self, handle_id: str) -> bool:
+        """主动释放宿主 blob（最终删除由宿主 TTL/GC 判定）。"""
+        if not self.ensure_connected():
+            return False
+        try:
+            self._stub.ReleaseBlob(
+                plugin_pb2.ReleaseBlobRequest(handle_id=handle_id),
+                timeout=30,
+            )
+            return True
+        except grpc.RpcError as e:
+            logger.warning(f"ReleaseBlob 失败: {e}")
+            return False
 
     def send_message(self, session, chain) -> bool:
         """发送消息链。session 为 MessageSession 或 MessageChain。"""
@@ -273,6 +342,33 @@ class HostBridge:
             return True
         except grpc.RpcError as e:
             logger.warning(f"SendMessage 失败: {e}")
+            return False
+
+    def send_message_components(self, session, components: list) -> bool:
+        """发送原生 proto 组件链（P0-2，含 BinaryPayload 大文件）。
+
+        components 为 plugin_pb2.Component 列表；媒体组件可携带 payload
+        （inline_data 内联 bytes，或 file=FileReference handle——宿主读 blob
+        组装，避免大文件全量 base64 塞进 chain_json）。
+        """
+        from astrbot.core.platform.message_session import MessageSession
+
+        if not self.ensure_connected():
+            raise RuntimeError("宿主桥未就绪（SendMessage 不可用）")
+        if isinstance(session, str):
+            session = MessageSession.from_str(session)
+        try:
+            self._stub.SendMessage(
+                plugin_pb2.SendMessageRequest(
+                    platform=session.platform_id,
+                    session_id=session.session_id,
+                    chain_components=components,
+                ),
+                timeout=60,
+            )
+            return True
+        except grpc.RpcError as e:
+            logger.warning(f"SendMessage(components) 失败: {e}")
             return False
 
     def call_action(self, platform: str, api: str, params: dict) -> dict:
