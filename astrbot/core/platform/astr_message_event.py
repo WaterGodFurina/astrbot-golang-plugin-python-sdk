@@ -463,7 +463,13 @@ class AstrMessageEvent(abc.ABC):
 
     @classmethod
     def from_event_json(cls, data: dict) -> "AstrMessageEvent":
-        """从宿主 sdk.Event JSON 重建事件对象。"""
+        """[遗留/迁移辅助] 从宿主 sdk.Event JSON 重建事件对象。
+
+        注意：本方法是 P1 Protocol 2 之前的 JSON 反序列化路径，已不在 RPC
+        调用链上使用（生产路径统一走 proto `from_proto`，0 JSON 序列化）。
+        当前仅被 tests/run_tests.py 作为迁移期测试辅助调用。新增代码不应
+        依赖本方法；如需从宿主事件重建，请使用 `from_proto`。
+        """
         from astrbot.core.message.components import ComponentType
         from astrbot._bridge.serialize import component_from_json
 
