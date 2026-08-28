@@ -1,6 +1,8 @@
 """sdk.Event / 消息组件 JSON 与 Python 对象互转（对齐 Go SDK Component 字段）。"""
 from __future__ import annotations
 
+import base64
+
 from astrbot.core.message.components import (
     At,
     AtAll,
@@ -204,7 +206,8 @@ def component_to_json(comp: BaseMessageComponent, _depth: int = 0) -> dict:
 def result_to_json(result: MessageEventResult | str | None) -> list[dict]:
     """把插件 handler 返回的结果转为 Component JSON 列表。
 
-    返回 (chain_json, stop)。str → Plain；None → 空；MessageEventResult → chain。
+    仅用于对外兼容/字典结果的业务场景；RPC 响应链已改走
+    result_to_components（native proto，0 JSON 往返）。
     """
     if result is None:
         return [], False
@@ -218,6 +221,30 @@ def result_to_json(result: MessageEventResult | str | None) -> list[dict]:
         return [component_to_json(c) for c in (result.chain or [])], stop
     if isinstance(result, dict):
         return [result], False
+    return [], False
+
+
+def result_to_components(result) -> tuple[list, bool]:
+    """P1：把插件 handler 返回的结果直接转为 Python 组件列表（native，0 JSON）。
+
+    返回 (components, stop)。str → Plain；None → 空；MessageEventResult → 其
+    chain 组件原样透传（不经过 JSON dict 中转）；dict（插件动态数据）→ 经
+    component_from_json 还原（JSON 数据边界仅限插件提供的动态载荷）。
+    """
+    if result is None:
+        return [], False
+    if isinstance(result, str):
+        from astrbot.core.message.components import Plain
+
+        return [Plain(text=result)], False
+    if isinstance(result, MessageEventResult):
+        stop = result.is_stopped()
+        return list(result.chain or []), stop
+    if isinstance(result, dict):
+        from astrbot._bridge.serialize import component_from_json
+
+        comp = component_from_json(result)
+        return ([comp] if comp is not None else []), False
     return [], False
 
 
@@ -310,7 +337,9 @@ def component_to_proto(comp: BaseMessageComponent) -> object:
     else:
         ctype = str(_t)
     pc = plugin_pb2.Component(type=ctype, text=getattr(comp, "text", "") or "")
-    pc.target_id = getattr(comp, "target_id", "") or ""
+    # At 用 qq 承载目标 ID（AtAll 的 qq == "all" 原样透传，component_from_proto
+    # 再还原 AtAll）；其余组件用 target_id。
+    pc.target_id = str(getattr(comp, "target_id", "") or getattr(comp, "qq", "") or "")
     pc.name = getattr(comp, "name", "") or ""
     pc.url = getattr(comp, "url", "") or ""
     pc.path = getattr(comp, "path", "") or ""

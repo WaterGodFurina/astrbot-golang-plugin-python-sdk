@@ -14,7 +14,7 @@ from functools import lru_cache
 
 from astrbot._bridge import loop
 from astrbot._bridge.gen import plugin_pb2, plugin_pb2_grpc
-from astrbot._bridge.serialize import result_to_json
+from astrbot._bridge.serialize import result_to_components
 from astrbot.core.message.message_event_result import (
     EventResultType,
     MessageEventResult,
@@ -423,7 +423,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         try:
             event = AstrMessageEvent.from_proto(request.event)
         except json.JSONDecodeError as e:
-            logger.error(f"HandleCommand: event_json 解析失败: {e}")
+            logger.error(f"HandleCommand: 事件解析失败: {e}")
             return resp
         event.is_at_or_wake_command = True
 
@@ -452,7 +452,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
             _set_result(resp, event, handled=True)
             return resp
 
-        chain: list[dict] = []
+        comps: list = []
         stop = False
         for r in results:
             if r is None:
@@ -460,20 +460,16 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
             if isinstance(r, ProviderRequest):
                 # request_llm：不设 Result，宿主继续默认 LLM
                 continue
-            if isinstance(r, dict):
-                chain.append(r)
-                continue
-            c, s = result_to_json(r)
-            chain.extend(c)
+            c, s = result_to_components(r)
+            comps.extend(c)
             stop = stop or s
         # event.stop_event()（_force_stopped）也要反映到响应：box 等插件
         # 在 handler 里 stop_event() 表示"事件已处理、不要再走 LLM"，但
         # handler 返回值里没有 Result（recall_task 路径），只靠返回值收集
         # stop 会漏掉 → 宿主继续 LLM 兜底（重复回复）。
         stop = stop or event.is_stopped()
-        if chain:
-            from astrbot._bridge.serialize import component_from_json, component_list_to_proto
-            comps = [component_from_json(d) for d in chain if d]
+        if comps:
+            from astrbot._bridge.serialize import component_list_to_proto
             resp.chain.extend(component_list_to_proto(comps))
         resp.stop = stop
         resp.sent = event._has_send_oper
@@ -487,7 +483,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         try:
             event = AstrMessageEvent.from_proto(request.event)
         except json.JSONDecodeError as e:
-            logger.error(f"HandleFilter: event_json 解析失败: {e}")
+            logger.error(f"HandleFilter: 事件解析失败: {e}")
             return plugin_pb2.HandleFilterResponse(allow=True)
         for name, handler, inst in self.filter_handlers:
             if name == request.name:
@@ -546,7 +542,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         try:
             event = AstrMessageEvent.from_proto(request.event)
         except json.JSONDecodeError as e:
-            logger.error(f"FeedSessionWait: event_json 解析失败: {e}")
+            logger.error(f"FeedSessionWait: 事件解析失败: {e}")
             return plugin_pb2.FeedSessionWaitResponse(handled=False)
         if not event_data:
             return plugin_pb2.FeedSessionWaitResponse(handled=False)
@@ -594,7 +590,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                 try:
                     event = AstrMessageEvent.from_proto(request.event)
                 except json.JSONDecodeError as e:
-                    logger.error(f"HandleHook(aiocqhttp): event_json 解析失败: {e}")
+                    logger.error(f"HandleHook(aiocqhttp): 事件解析失败: {e}")
                     return resp
                 _aiocqhttp_dispatch(event_data.get("raw_message"))
             except Exception as e:  # noqa: BLE001
@@ -610,7 +606,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                 try:
                     event = AstrMessageEvent.from_proto(request.event)
                 except json.JSONDecodeError as e:
-                    logger.error(f"HandleHook(botpy): event_json 解析失败: {e}")
+                    logger.error(f"HandleHook(botpy): 事件解析失败: {e}")
                     return resp
                 _botpy_dispatch(event_data)
             except Exception as e:  # noqa: BLE001
@@ -625,7 +621,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                 try:
                     event = AstrMessageEvent.from_proto(request.event)
                 except json.JSONDecodeError as e:
-                    logger.error(f"HandleHook(telegram): event_json 解析失败: {e}")
+                    logger.error(f"HandleHook(telegram): 事件解析失败: {e}")
                     return resp
                 _telegram_dispatch(event_data)
             except Exception as e:  # noqa: BLE001
@@ -638,7 +634,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         try:
             event = AstrMessageEvent.from_proto(request.event)
         except json.JSONDecodeError as e:
-            logger.error(f"HandleHook {request.name}: event_json 解析失败: {e}")
+            logger.error(f"HandleHook {request.name}: 事件解析失败: {e}")
             return resp
 
         if event_name in ("on_decorating_result", "on_result_handling"):
@@ -740,7 +736,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         try:
             event = AstrMessageEvent.from_proto(request.event)
         except json.JSONDecodeError as e:
-            logger.error(f"HandleLLMRequest {request.name}: event_json 解析失败: {e}")
+            logger.error(f"HandleLLMRequest {request.name}: 事件解析失败: {e}")
             return resp
         req = ProviderRequest(
             prompt=request.user_prompt,
@@ -786,7 +782,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         try:
             event = AstrMessageEvent.from_proto(request.event)
         except json.JSONDecodeError as e:
-            logger.error(f"HandleTool {request.name}: event_json 解析失败: {e}")
+            logger.error(f"HandleTool {request.name}: 事件解析失败: {e}")
             return plugin_pb2.HandleToolResponse(text=f"工具 {request.name} 事件解析失败", is_error=True)
         args = {}
         if request.args_json:

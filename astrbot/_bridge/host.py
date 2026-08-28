@@ -12,7 +12,7 @@ import grpc
 from astrbot._bridge import loop
 from astrbot._bridge.broker import get_broker
 from astrbot._bridge.gen import plugin_pb2, plugin_pb2_grpc
-from astrbot._bridge.serialize import component_to_json
+from astrbot._bridge.serialize import component_list_to_proto
 
 logger = logging.getLogger("astrbot.host")
 
@@ -322,20 +322,23 @@ class HostBridge:
             return False
 
     def send_message(self, session, chain) -> bool:
-        """发送消息链。session 为 MessageSession 或 MessageChain。"""
+        """发送消息链。session 为 MessageSession 或 MessageChain。
+
+        P1：链走 proto repeated Component（chain_components），不再经
+        chain_json（旧字段号已 reserved，发给宿主会被丢弃）。
+        """
         from astrbot.core.platform.message_session import MessageSession
 
         if not self.ensure_connected():
             raise RuntimeError("宿主桥未就绪（SendMessage 不可用）")
         if isinstance(session, str):
             session = MessageSession.from_str(session)
-        chain_json = [component_to_json(c) for c in chain.chain]
         try:
             self._stub.SendMessage(
                 plugin_pb2.SendMessageRequest(
                     platform=session.platform_id,
                     session_id=session.session_id,
-                    chain_json=json.dumps(chain_json).encode(),
+                    chain_components=component_list_to_proto(chain.chain),
                 ),
                 timeout=30,
             )

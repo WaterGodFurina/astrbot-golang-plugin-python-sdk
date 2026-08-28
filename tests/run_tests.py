@@ -478,10 +478,6 @@ class TestAiocqhttpPlatformStub(unittest.TestCase):
         )
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
 class TestProtoEvent(unittest.TestCase):
     """P1：proto SDKEvent → Python Event 语义等价 + proto Component 往返。"""
 
@@ -515,6 +511,7 @@ class TestProtoEvent(unittest.TestCase):
         import json as _json
 
         from astrbot._bridge.gen import plugin_pb2
+        from astrbot.core.message.components import ComponentType
         from astrbot.core.platform.astr_message_event import AstrMessageEvent
 
         se = plugin_pb2.SDKEvent(
@@ -531,17 +528,209 @@ class TestProtoEvent(unittest.TestCase):
         )
         ev = AstrMessageEvent.from_proto(se)
         self.assertEqual(ev.message_str, "hello world")
-        self.assertEqual(ev.sender_id, "u1")
-        self.assertEqual(ev.sender_name, "alice")
-        self.assertTrue(ev.is_group)
+        self.assertEqual(ev.get_sender_id(), "u1")
+        self.assertEqual(ev.get_sender_name(), "alice")
+        self.assertEqual(ev.get_platform_id(), "p1")
+        self.assertEqual(ev.get_self_id(), "self")
+        self.assertEqual(ev.get_session_id(), "g1")
+        self.assertEqual(ev.get_group_id(), "g1")
+        self.assertEqual(ev.session.message_type.value, "GroupMessage")
         self.assertTrue(ev.is_at_bot)
-        self.assertFalse(ev.is_admin)
         self.assertEqual(ev.role, "admin")
-        self.assertEqual(ev.message_id, "m1")
+        self.assertEqual(ev.message_obj.message_id, "m1")
+        self.assertEqual(ev.message_obj.timestamp, 1700000000)
         # raw_message 解析为 dict
-        self.assertIsInstance(ev.raw_message, dict)
-        self.assertEqual(ev.raw_message.get("notice_type"), "x")
+        self.assertIsInstance(ev.message_obj.raw_message, dict)
+        self.assertEqual(ev.message_obj.raw_message.get("notice_type"), "x")
         # components
         msgs = ev.get_messages() or []
         self.assertEqual(len(msgs), 2)
-        self.assertEqual(str(msgs[0].type.value if hasattr(msgs[0].type, "value") else msgs[0].type), "Plain")
+        self.assertEqual(
+            str(msgs[0].type.value if hasattr(msgs[0].type, "value") else msgs[0].type),
+            "Plain",
+        )
+        self.assertEqual(
+            str(msgs[1].type.value if hasattr(msgs[1].type, "value") else msgs[1].type),
+            "At",
+        )
+
+    def test_from_proto_field_completeness(self):
+        """spec #18：SDKEvent 全字段 → Python Event 字段完整性。"""
+        import json as _json
+
+        from astrbot._bridge.gen import plugin_pb2
+        from astrbot.core.platform.astr_message_event import AstrMessageEvent
+
+        se = plugin_pb2.SDKEvent(
+            type="message", platform="telegram", platform_id="t1",
+            message_type="FriendMessage", self_id="self", sender_id="u1",
+            sender_name="alice", conv_id="c1", group_name="",
+            is_group=False, is_at_bot=False, is_admin=False,
+            message_str="hi", plain_text="hi", raw_message=b"raw",
+            message_id="m1", timestamp=1700000000,
+            metadata_json=_json.dumps({"foo": "bar"}).encode(),
+            components=[plugin_pb2.Component(type="Plain", text="hi")],
+        )
+        ev = AstrMessageEvent.from_proto(se)
+        # 固定字段逐一核对（用 SDK 暴露的访问器）
+        self.assertEqual(ev.get_platform_id(), "t1")
+        self.assertEqual(ev.get_self_id(), "self")
+        self.assertEqual(ev.get_sender_id(), "u1")
+        self.assertEqual(ev.get_sender_name(), "alice")
+        self.assertEqual(ev.get_session_id(), "c1")
+        self.assertFalse(ev.is_at_bot)
+        self.assertEqual(ev.role, "member")
+        self.assertEqual(ev.message_str, "hi")
+        self.assertEqual(ev.message_obj.message_id, "m1")
+        self.assertEqual(ev.message_obj.timestamp, 1700000000)
+        # metadata（role 已由 metadata_json 注入）
+        self.assertEqual(ev.role, "member")  # 未声明 role → 回退 member
+
+    def test_from_proto_empty_semantics(self):
+        """spec #18：None / empty string / false / 0 / empty list / empty dict
+        语义不得被改变或破坏。"""
+        import json as _json
+
+        from astrbot._bridge.gen import plugin_pb2
+        from astrbot.core.platform.astr_message_event import AstrMessageEvent
+
+        # 全部默认值（proto3 零值）
+        se = plugin_pb2.SDKEvent()
+        ev = AstrMessageEvent.from_proto(se)
+        self.assertEqual(ev.get_sender_id(), "")
+        self.assertEqual(ev.message_str, "")
+        self.assertEqual(ev.get_session_id(), "")
+        self.assertFalse(ev.is_at_bot)
+        self.assertEqual(ev.role, "member")  # 非 admin 回退 member
+        # timestamp=0（proto3 零值）→ 视为未设置，回退当前时间（>0）
+        self.assertGreater(ev.message_obj.timestamp, 0)
+        # 空链
+        self.assertEqual(ev.get_messages() or [], [])
+        # 默认私聊（无 is_group → FriendMessage）
+        self.assertEqual(ev.session.message_type.value, "FriendMessage")
+
+        # 空链
+        self.assertEqual(ev.get_messages() or [], [])
+
+        # 显式 false / 0
+        se = plugin_pb2.SDKEvent(
+            is_group=False, is_at_bot=False, is_admin=False,
+            timestamp=0, components=[],
+        )
+        ev = AstrMessageEvent.from_proto(se)
+        self.assertFalse(ev.is_at_bot)
+        self.assertEqual(ev.role, "member")
+        self.assertGreater(ev.message_obj.timestamp, 0)
+        self.assertEqual(ev.get_messages() or [], [])
+
+    def test_component_proto_full_types(self):
+        """spec #18：各组件类型 proto 往返（含 binary/base64/Json 卡片）。"""
+        from astrbot._bridge.gen import plugin_pb2
+        from astrbot._bridge.serialize import component_from_proto, component_to_proto, proto_to_component_list
+        from astrbot.core.message.components import (
+            At, AtAll, Face, File, Image, Json, Plain, Record, Reply, Video,
+        )
+
+        cases = [
+            Plain(text="hello"),
+            At(qq="123", name="u"),
+            AtAll(),
+            Reply(id="r1", message_str="quoted"),
+            Image(file="base64://aGVsbG8="),
+            Image(url="https://x/y.png"),
+            Image(path="/tmp/a.png"),
+            Record(file="a.ogg", url="https://e/r.ogg"),
+            Video(file="v.mp4"),
+            File(name="doc.pdf", file="/tmp/d.pdf"),
+            Face(id=1),
+            Json(data={"app": "card", "n": 1, "ok": True, "arr": [1, 2, 3]}),
+        ]
+        for c in cases:
+            pc = component_to_proto(c)
+            back = component_from_proto(pc)
+            ct = str(back.type.value if hasattr(back.type, "value") else back.type)
+            want = str(c.type.value if hasattr(c.type, "value") else c.type)
+            self.assertEqual(ct, want, f"type mismatch for {c}")
+        # 组合链：Plain + At
+        chain = component_list_to_proto_stub()
+        comps = proto_to_component_list(chain)
+        self.assertEqual(len(comps), 2)
+        self.assertEqual(comps[0].text, "hello")
+        self.assertEqual(comps[1].qq, "456")
+
+
+def component_list_to_proto_stub():
+    """构造 Plain + At 组合链的 proto 组件。"""
+    from astrbot._bridge.gen import plugin_pb2
+    return [
+        plugin_pb2.Component(type="Plain", text="hello"),
+        plugin_pb2.Component(type="At", target_id="456", name="bob"),
+    ]
+
+
+class TestP1Benchmark:
+    """P1 native 数据面轻量 benchmark（spec #21，100KB/1MB）。
+
+    非 unittest（unittest.main 会跑真 benchmark 太慢）：用 __main__ 手动触发。
+    """
+
+    @staticmethod
+    def run():
+        import json as _json
+        import time
+
+        from astrbot._bridge.gen import plugin_pb2
+        from astrbot.core.platform.astr_message_event import AstrMessageEvent
+
+        def build_event(target_bytes):
+            body = "这是一段用于 P1 数据面基准测试的长文本回复内容。"
+            while True:
+                se = plugin_pb2.SDKEvent(
+                    type="message", platform="aiocqhttp", platform_id="p",
+                    message_type="GroupMessage", self_id="s", sender_id="u",
+                    sender_name="n", conv_id="g", group_name="g",
+                    is_group=True, is_at_bot=True, is_admin=True,
+                    message_str=body, plain_text=body, raw_message=body,
+                    message_id="m", timestamp=1700000000,
+                    metadata_json=_json.dumps({"role": "admin", "n": 42}).encode(),
+                    components=[plugin_pb2.Component(type="Plain", text=body)],
+                )
+                if len(se.SerializeToString()) >= target_bytes:
+                    break
+                body += "这是一段用于 P1 数据面基准测试的长文本回复内容。"
+            return se
+
+        print("\n[Python SDK P1 benchmark]")
+        for name, target in (("100KB", 100 << 10), ("1MB", 1 << 20)):
+            se = build_event(target)
+            wire = se.SerializeToString()
+            # from_proto
+            n = 200 if name == "100KB" else 20
+            t0 = time.perf_counter()
+            for _ in range(n):
+                AstrMessageEvent.from_proto(se)
+            dt_from = (time.perf_counter() - t0) / n
+            # proto wire marshal
+            t0 = time.perf_counter()
+            for _ in range(n):
+                se.SerializeToString()
+            dt_marshal = (time.perf_counter() - t0) / n
+            # proto wire unmarshal
+            t0 = time.perf_counter()
+            for _ in range(n):
+                plugin_pb2.SDKEvent.FromString(wire)
+            dt_unmarshal = (time.perf_counter() - t0) / n
+            # JSON 参照（整事件 marshal——旧路径）
+            ev_dict = {"type": se.type, "platform": se.platform, "message_str": se.message_str}
+            t0 = time.perf_counter()
+            for _ in range(n):
+                _json.dumps(ev_dict)
+            dt_json = (time.perf_counter() - t0) / n
+            print(f"  {name} wire={len(wire)}B  from_proto={dt_from*1e6:.1f}us  "
+                  f"marshal={dt_marshal*1e6:.1f}us  unmarshal={dt_unmarshal*1e6:.1f}us  "
+                  f"json_ref={dt_json*1e6:.1f}us")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2, exit=False)
+    TestP1Benchmark.run()
