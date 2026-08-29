@@ -1,4 +1,5 @@
-// go-plugin (hashicorp) 的 gRPC broker 协议（服务端角色），Python SDK 复刻。
+// go-plugin (hashicorp) 的 gRPC broker 协议 + stdio 日志流（服务端角色），
+// Python SDK 复刻。
 syntax = "proto3";
 package plugin;
 option go_package = "github.com/WaterGodFurina/Astrbot-go-plugin-sdk/gen/sdkv1";
@@ -17,4 +18,26 @@ message ConnInfo {
 
 service GRPCBroker {
     rpc StartStream(stream ConnInfo) returns (stream ConnInfo);
+}
+
+// GRPCStdio 与 StdioData：go-plugin 插件进程侧的 stdout/stderr 日志流服务
+// （宿主经 go-plugin 自动连接镜像插件日志）。Python 插件 stdout/stderr 已由
+// 宿主直接经子进程管道读取转发（runtime.go startup_error.go），此处仅需
+// 提供服务存在（消除宿主连接 stdio 时的 UNIMPLEMENTED "Method not found"），
+// StreamStdio 保持连接即可，不重复转发。
+message StdioData {
+    enum Channel {
+        INVALID = 0;
+        STDOUT = 1;
+        STDERR = 2;
+    }
+    Channel channel = 1;
+    bytes data = 2;
+}
+
+message StdioEmpty {
+}
+
+service GRPCStdio {
+    rpc StreamStdio(StdioEmpty) returns (stream StdioData);
 }

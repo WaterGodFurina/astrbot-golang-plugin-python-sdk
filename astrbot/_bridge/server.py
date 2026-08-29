@@ -119,6 +119,7 @@ def main() -> int:
         from astrbot._bridge.broker import get_broker
         from astrbot._bridge.dispatch import PluginServiceServicer
         from astrbot._bridge.gen import goplugin_pb2_grpc, plugin_pb2_grpc
+        from astrbot._bridge.stdio import register_grpc_stdio
 
         servicer = PluginServiceServicer(plugin_dirname, "", "", "", plugin_dir)
         # 复用 servicer 的状态机（避免 server 侧与 dispatch 侧两套互不相通的
@@ -134,6 +135,9 @@ def main() -> int:
         )
         plugin_pb2_grpc.add_PluginServiceServicer_to_server(servicer, server)
         goplugin_pb2_grpc.add_GRPCBrokerServicer_to_server(get_broker(), server)
+        # go-plugin 宿主握手后自动连 GRPCStdio：缺服务 → Method not found
+        #（虽降级但破坏 stdio 日志流镜像）。补上保活空流实现。
+        register_grpc_stdio(server)
 
         # 宿主通过 TCP 连入（grpc-python 只支持非阻塞 serve）
         bound_port = None

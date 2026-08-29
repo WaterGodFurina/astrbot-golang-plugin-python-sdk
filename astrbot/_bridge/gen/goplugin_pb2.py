@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0egoplugin.proto\x12\x06plugin\"\x9b\x01\n\x08\x43onnInfo\x12\x12\n\nservice_id\x18\x01 \x01(\r\x12\x0f\n\x07network\x18\x02 \x01(\t\x12\x0f\n\x07\x61\x64\x64ress\x18\x03 \x01(\t\x12%\n\x05knock\x18\x04 \x01(\x0b\x32\x16.plugin.ConnInfo.Knock\x1a\x32\n\x05Knock\x12\r\n\x05knock\x18\x01 \x01(\x08\x12\x0b\n\x03\x61\x63k\x18\x02 \x01(\x08\x12\r\n\x05\x65rror\x18\x03 \x01(\t2C\n\nGRPCBroker\x12\x35\n\x0bStartStream\x12\x10.plugin.ConnInfo\x1a\x10.plugin.ConnInfo(\x01\x30\x01\x42;Z9github.com/WaterGodFurina/Astrbot-go-plugin-sdk/gen/sdkv1b\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0egoplugin.proto\x12\x06plugin\"\x9b\x01\n\x08\x43onnInfo\x12\x12\n\nservice_id\x18\x01 \x01(\r\x12\x0f\n\x07network\x18\x02 \x01(\t\x12\x0f\n\x07\x61\x64\x64ress\x18\x03 \x01(\t\x12%\n\x05knock\x18\x04 \x01(\x0b\x32\x16.plugin.ConnInfo.Knock\x1a\x32\n\x05Knock\x12\r\n\x05knock\x18\x01 \x01(\x08\x12\x0b\n\x03\x61\x63k\x18\x02 \x01(\x08\x12\r\n\x05\x65rror\x18\x03 \x01(\t\"u\n\tStdioData\x12*\n\x07\x63hannel\x18\x01 \x01(\x0e\x32\x19.plugin.StdioData.Channel\x12\x0c\n\x04\x64\x61ta\x18\x02 \x01(\x0c\".\n\x07\x43hannel\x12\x0b\n\x07INVALID\x10\x00\x12\n\n\x06STDOUT\x10\x01\x12\n\n\x06STDERR\x10\x02\"\x0c\n\nStdioEmpty2C\n\nGRPCBroker\x12\x35\n\x0bStartStream\x12\x10.plugin.ConnInfo\x1a\x10.plugin.ConnInfo(\x01\x30\x01\x32\x43\n\tGRPCStdio\x12\x36\n\x0bStreamStdio\x12\x12.plugin.StdioEmpty\x1a\x11.plugin.StdioData0\x01\x42;Z9github.com/WaterGodFurina/Astrbot-go-plugin-sdk/gen/sdkv1b\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -36,6 +36,14 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_CONNINFO']._serialized_end=182
   _globals['_CONNINFO_KNOCK']._serialized_start=132
   _globals['_CONNINFO_KNOCK']._serialized_end=182
-  _globals['_GRPCBROKER']._serialized_start=184
-  _globals['_GRPCBROKER']._serialized_end=251
+  _globals['_STDIODATA']._serialized_start=184
+  _globals['_STDIODATA']._serialized_end=301
+  _globals['_STDIODATA_CHANNEL']._serialized_start=255
+  _globals['_STDIODATA_CHANNEL']._serialized_end=301
+  _globals['_STDIOEMPTY']._serialized_start=303
+  _globals['_STDIOEMPTY']._serialized_end=315
+  _globals['_GRPCBROKER']._serialized_start=317
+  _globals['_GRPCBROKER']._serialized_end=384
+  _globals['_GRPCSTDIO']._serialized_start=386
+  _globals['_GRPCSTDIO']._serialized_end=453
 # @@protoc_insertion_point(module_scope)

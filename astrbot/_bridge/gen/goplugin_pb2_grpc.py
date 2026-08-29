@@ -95,3 +95,75 @@ class GRPCBroker:
             timeout,
             metadata,
             _registered_method=True)
+
+
+class GRPCStdioStub:
+    """Missing associated documentation comment in .proto file."""
+
+    def __init__(self, channel):
+        """Constructor.
+
+        Args:
+            channel: A grpc.Channel.
+        """
+        self.StreamStdio = channel.unary_stream(
+                '/plugin.GRPCStdio/StreamStdio',
+                request_serializer=goplugin__pb2.StdioEmpty.SerializeToString,
+                response_deserializer=goplugin__pb2.StdioData.FromString,
+                _registered_method=True)
+
+
+class GRPCStdioServicer:
+    """Missing associated documentation comment in .proto file."""
+
+    def StreamStdio(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+
+def add_GRPCStdioServicer_to_server(servicer, server):
+    rpc_method_handlers = {
+            'StreamStdio': grpc.unary_stream_rpc_method_handler(
+                    servicer.StreamStdio,
+                    request_deserializer=goplugin__pb2.StdioEmpty.FromString,
+                    response_serializer=goplugin__pb2.StdioData.SerializeToString,
+            ),
+    }
+    generic_handler = grpc.method_handlers_generic_handler(
+            'plugin.GRPCStdio', rpc_method_handlers)
+    server.add_generic_rpc_handlers((generic_handler,))
+    server.add_registered_method_handlers('plugin.GRPCStdio', rpc_method_handlers)
+
+
+ # This class is part of an EXPERIMENTAL API.
+class GRPCStdio:
+    """Missing associated documentation comment in .proto file."""
+
+    @staticmethod
+    def StreamStdio(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/plugin.GRPCStdio/StreamStdio',
+            goplugin__pb2.StdioEmpty.SerializeToString,
+            goplugin__pb2.StdioData.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
