@@ -90,60 +90,10 @@ def _download_sync(url: str, suffix: str = "") -> str:
     return _DOWNLOAD_EXECUTOR.submit(_download_to_temp, url, suffix).result()
 
 
-class MediaResolver:
-    """简化版媒体解析：http(s) 下载到临时目录，本地路径原样返回。"""
-
-    def __init__(self, source: str, media_type: str = "", default_suffix: str = ""):
-        self.source = source
-        self.media_type = media_type
-        self.default_suffix = default_suffix
-
-    async def to_path(self, target_format: str | None = None) -> str:
-        source = self.source
-        if source.startswith("base64://"):
-            suffix = f".{target_format}" if target_format else self.default_suffix or ".bin"
-            return self._write_base64(source[len("base64://"):], suffix)
-        if source.startswith("data:"):
-            import re
-
-            m = re.match(r"data:[^;]+;base64,(.*)", source, re.S)
-            if m:
-                suffix = f".{target_format}" if target_format else ".bin"
-                return self._write_base64(m.group(1), suffix)
-            # 非 base64 的 data: URI 无法落盘：显式报错，避免下游拿到
-            # URI 字符串当文件路径用，在 open() 处才崩溃。
-            raise ValueError(
-                f"不支持的 data: URI（仅支持 data:*;base64,... 编码）: {source[:64]!r}"
-            )
-        if source.startswith("http://") or source.startswith("https://"):
-            suffix = self.default_suffix or ".bin"
-            # http(s) 源下载在子线程执行，避免 opener.open(timeout=30) 阻塞事件循环
-            return await asyncio.to_thread(_download_to_temp, source, suffix)
-        if is_file_uri(source):
-            return file_uri_to_path(source)
-        if os.path.exists(source):
-            return source
-        # 不存在的本地路径原样返回会导致下游 open() 抛 FileNotFoundError，
-        # 错误离根因很远：此处显式报错。
-        raise ValueError(f"媒体源既非 URL/URI 也不是存在的本地文件: {source!r}")
-
-    async def to_base64(self, target_format: str | None = None) -> str:
-        path = await self.to_path(target_format)
-        with open(path, "rb") as f:
-            return base64.b64encode(f.read()).decode()
-
-    @staticmethod
-    def _write_base64(b64: str, suffix: str) -> str:
-        import binascii
-
-        try:
-            data = base64.b64decode(b64)
-        except binascii.Error:
-            data = b64.encode()
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-        tmp.write(data)
-        tmp.close()
-        return tmp.name
+# MediaResolver 唯一权威实现见 utils.media_utils（本路径 re-export 同对象，
+# 避免 SDK 内部出现两套同名不同义的 MediaResolver）。message.components 内
+# 其它方法（File.get_file 等）仍使用本模块的 file_uri_to_path / _download_to_temp。
+from astrbot.core.utils.media_utils import MediaResolver  # noqa: E402, F401  re-export
 
 
 class BaseMessageComponent:

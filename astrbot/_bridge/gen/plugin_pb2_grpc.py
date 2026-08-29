@@ -913,6 +913,41 @@ class HostServiceStub:
                 request_serializer=plugin__pb2.ReleaseBlobRequest.SerializeToString,
                 response_deserializer=plugin__pb2.Empty.FromString,
                 _registered_method=True)
+        self.ListSkills = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/ListSkills',
+                request_serializer=plugin__pb2.Empty.SerializeToString,
+                response_deserializer=plugin__pb2.SkillsResponse.FromString,
+                _registered_method=True)
+        self.SetSkillActive = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/SetSkillActive',
+                request_serializer=plugin__pb2.SetSkillActiveRequest.SerializeToString,
+                response_deserializer=plugin__pb2.Empty.FromString,
+                _registered_method=True)
+        self.DeleteSkill = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/DeleteSkill',
+                request_serializer=plugin__pb2.DeleteSkillRequest.SerializeToString,
+                response_deserializer=plugin__pb2.Empty.FromString,
+                _registered_method=True)
+        self.GetPlatformMessageHistory = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/GetPlatformMessageHistory',
+                request_serializer=plugin__pb2.GetPMHistoryRequest.SerializeToString,
+                response_deserializer=plugin__pb2.PMHistoryRecordsResponse.FromString,
+                _registered_method=True)
+        self.InsertPlatformMessageHistory = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/InsertPlatformMessageHistory',
+                request_serializer=plugin__pb2.InsertPMHistoryRequest.SerializeToString,
+                response_deserializer=plugin__pb2.PMHistoryRecordResponse.FromString,
+                _registered_method=True)
+        self.UpdatePlatformMessageHistory = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/UpdatePlatformMessageHistory',
+                request_serializer=plugin__pb2.UpdatePMHistoryRequest.SerializeToString,
+                response_deserializer=plugin__pb2.Empty.FromString,
+                _registered_method=True)
+        self.DeletePlatformMessageHistory = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/DeletePlatformMessageHistory',
+                request_serializer=plugin__pb2.DeletePMHistoryRequest.SerializeToString,
+                response_deserializer=plugin__pb2.Empty.FromString,
+                _registered_method=True)
 
 
 class HostServiceServicer:
@@ -1210,6 +1245,57 @@ class HostServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListSkills(self, request, context):
+        """── 技能（Skills，宿主 internal/skills 能力 → 插件可读可改）──
+        ListSkills 返回宿主技能管理器中的全部技能（SkillInfo JSON 列表）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SetSkillActive(self, request, context):
+        """SetSkillActive 启用/禁用指定技能。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DeleteSkill(self, request, context):
+        """DeleteSkill 删除指定技能。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetPlatformMessageHistory(self, request, context):
+        """── 平台消息历史（宿主 db platform_message_history 表 → 插件可读可改）──
+        GetPlatformMessageHistory 按平台/用户取最近 n 条消息记录。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def InsertPlatformMessageHistory(self, request, context):
+        """InsertPlatformMessageHistory 插入一条平台消息记录。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def UpdatePlatformMessageHistory(self, request, context):
+        """UpdatePlatformMessageHistory 更新一条记录（content / llm_checkpoint_id）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DeletePlatformMessageHistory(self, request, context):
+        """DeletePlatformMessageHistory 按 ID 删除一条记录。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_HostServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -1411,6 +1497,41 @@ def add_HostServiceServicer_to_server(servicer, server):
             'ReleaseBlob': grpc.unary_unary_rpc_method_handler(
                     servicer.ReleaseBlob,
                     request_deserializer=plugin__pb2.ReleaseBlobRequest.FromString,
+                    response_serializer=plugin__pb2.Empty.SerializeToString,
+            ),
+            'ListSkills': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListSkills,
+                    request_deserializer=plugin__pb2.Empty.FromString,
+                    response_serializer=plugin__pb2.SkillsResponse.SerializeToString,
+            ),
+            'SetSkillActive': grpc.unary_unary_rpc_method_handler(
+                    servicer.SetSkillActive,
+                    request_deserializer=plugin__pb2.SetSkillActiveRequest.FromString,
+                    response_serializer=plugin__pb2.Empty.SerializeToString,
+            ),
+            'DeleteSkill': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeleteSkill,
+                    request_deserializer=plugin__pb2.DeleteSkillRequest.FromString,
+                    response_serializer=plugin__pb2.Empty.SerializeToString,
+            ),
+            'GetPlatformMessageHistory': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetPlatformMessageHistory,
+                    request_deserializer=plugin__pb2.GetPMHistoryRequest.FromString,
+                    response_serializer=plugin__pb2.PMHistoryRecordsResponse.SerializeToString,
+            ),
+            'InsertPlatformMessageHistory': grpc.unary_unary_rpc_method_handler(
+                    servicer.InsertPlatformMessageHistory,
+                    request_deserializer=plugin__pb2.InsertPMHistoryRequest.FromString,
+                    response_serializer=plugin__pb2.PMHistoryRecordResponse.SerializeToString,
+            ),
+            'UpdatePlatformMessageHistory': grpc.unary_unary_rpc_method_handler(
+                    servicer.UpdatePlatformMessageHistory,
+                    request_deserializer=plugin__pb2.UpdatePMHistoryRequest.FromString,
+                    response_serializer=plugin__pb2.Empty.SerializeToString,
+            ),
+            'DeletePlatformMessageHistory': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeletePlatformMessageHistory,
+                    request_deserializer=plugin__pb2.DeletePMHistoryRequest.FromString,
                     response_serializer=plugin__pb2.Empty.SerializeToString,
             ),
     }
@@ -2494,6 +2615,195 @@ class HostService:
             target,
             '/astrbot.sdk.v1.HostService/ReleaseBlob',
             plugin__pb2.ReleaseBlobRequest.SerializeToString,
+            plugin__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListSkills(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/ListSkills',
+            plugin__pb2.Empty.SerializeToString,
+            plugin__pb2.SkillsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SetSkillActive(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/SetSkillActive',
+            plugin__pb2.SetSkillActiveRequest.SerializeToString,
+            plugin__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeleteSkill(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/DeleteSkill',
+            plugin__pb2.DeleteSkillRequest.SerializeToString,
+            plugin__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetPlatformMessageHistory(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/GetPlatformMessageHistory',
+            plugin__pb2.GetPMHistoryRequest.SerializeToString,
+            plugin__pb2.PMHistoryRecordsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def InsertPlatformMessageHistory(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/InsertPlatformMessageHistory',
+            plugin__pb2.InsertPMHistoryRequest.SerializeToString,
+            plugin__pb2.PMHistoryRecordResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UpdatePlatformMessageHistory(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/UpdatePlatformMessageHistory',
+            plugin__pb2.UpdatePMHistoryRequest.SerializeToString,
+            plugin__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeletePlatformMessageHistory(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/DeletePlatformMessageHistory',
+            plugin__pb2.DeletePMHistoryRequest.SerializeToString,
             plugin__pb2.Empty.FromString,
             options,
             channel_credentials,

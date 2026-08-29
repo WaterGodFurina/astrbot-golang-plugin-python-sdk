@@ -478,6 +478,194 @@ class TestAiocqhttpPlatformStub(unittest.TestCase):
         )
 
 
+class TestSkillsHistoryBridge(unittest.TestCase):
+    """SkillManager / HostBridge 的 skills + platform-message-history 薄壳
+    转发（mock HostBridge，验证请求构造与返回到强类型/降级）。"""
+
+    def _fake_bridge(self, **overrides):
+        """构造一个可注入 get_host_bridge 的 FakeBridge（缺省方法 no-op）。"""
+        import types
+
+        methods = {
+            "ensure_connected": lambda self: True,
+            "list_skills": lambda self, active_only=False, runtime="": [],
+            "set_skill_active": lambda self, name, active: True,
+            "delete_skill": lambda self, name: True,
+            "get_platform_message_history": lambda self, platform_id, user_id, limit=200: [],
+            "insert_platform_message_history": lambda self, platform_id, user_id, content, sender_id=None, llm_checkpoint_id=None, max_messages=0: {},
+            "update_platform_message_history": lambda self, message_id, content=None, llm_checkpoint_id=None: True,
+            "delete_platform_message_history": lambda self, message_id: True,
+        }
+        methods.update(overrides)
+        return type("FakeBridge", (), methods)()
+
+    def _patch_bridge(self, fake):
+        import astrbot.core.star.context as ctx_mod
+
+        old = ctx_mod.get_host_bridge
+        ctx_mod.get_host_bridge = lambda: fake
+        self.addCleanup(lambda: setattr(ctx_mod, "get_host_bridge", old))
+
+    def test_skill_manager_list_skills_parses_host_payload(self):
+        from astrbot.core.skills.skill_manager import SkillInfo, SkillManager
+
+        fake = self._fake_bridge(
+            list_skills=lambda self, active_only=False, runtime="": [
+                {
+                    "name": "weather",
+                    "description": "查询天气",
+                    "path": "data/skills/weather/SKILL.md",
+                    "active": True,
+                    "source_type": "local_only",
+                    "source_label": "local",
+                    "local_exists": True,
+                    "sandbox_exists": False,
+                    "plugin_name": "",
+                    "readonly": False,
+                    "preset": False,
+                }
+            ]
+        )
+        self._patch_bridge(fake)
+        mgr = SkillManager()
+        skills = mgr.list_skills()
+        self.assertEqual(len(skills), 1)
+        s = skills[0]
+        self.assertIsInstance(s, SkillInfo)
+        self.assertEqual(s.name, "weather")
+        self.assertTrue(s.active)
+        self.assertEqual(s.source_type, "local_only")
+
+    def test_skill_manager_lists_skills_info_dict(self):
+        from astrbot.core.skills.skill_manager import SkillManager
+
+        fake = self._fake_bridge(
+            list_skills=lambda self, active_only=False, runtime="": [
+                {"name": "a", "description": "d", "path": "p", "active": True}
+            ]
+        )
+        self._patch_bridge(fake)
+        infos = SkillManager().list_skills_info()
+        self.assertEqual(infos[0]["name"], "a")
+        self.assertEqual(infos[0].get("source_type", "local_only"), "local_only")
+
+    def test_skill_manager_set_active_and_delete(self):
+        from astrbot.core.skills.skill_manager import SkillManager
+
+        calls = {}
+
+        def set_active(self, name, active):
+            calls["set"] = (name, active)
+            return True
+
+        def delete(self, name):
+            calls["delete"] = name
+            return True
+
+        fake = self._fake_bridge(set_skill_active=set_active, delete_skill=delete)
+        self._patch_bridge(fake)
+        mgr = SkillManager()
+        mgr.set_skill_active("weather", True)
+        mgr.delete_skill("obsolete")
+        self.assertEqual(calls["set"], ("weather", True))
+        self.assertEqual(calls["delete"], "obsolete")
+
+    def test_skill_manager_downgrades_without_host(self):
+        # host bridge 未提供 skills 方法 / 未连接 → list 空、操作 no-op 不抛错
+        from astrbot.core.skills.skill_manager import SkillManager
+
+        fake = self._fake_bridge()  # 不含 list_skills / set_skill_active…
+        self._patch_bridge(fake)
+        mgr = SkillManager()
+        self.assertEqual(mgr.list_skills(), [])
+        mgr.set_skill_active("x", True)  # 不应抛异常
+        mgr.delete_skill("x")
+
+    def test_build_skills_prompt_empty_and_markdown(self):
+        from astrbot.core.skills.skill_manager import SkillInfo, build_skills_prompt, SkillManager
+
+        self.assertEqual(build_skills_prompt([]), "")
+        skills = [SkillInfo(name="test", description="desc", path="/x", active=True)]
+        out = build_skills_prompt(skills)
+        self.assertIn("## test", out)
+        self.assertIn("desc", out)
+
+        # SkillInfo.from_dict / to_dict 往返
+        s = SkillInfo.from_dict({"name": "n", "description": "d", "path": "p", "active": True})
+        d = s.to_dict()
+        self.assertEqual(d["name"], "n")
+        self.assertEqual(d["source_type"], "local_only")
+
+    def test_host_bridge_history_rpc_forwarding(self):
+        # 直接以 HostBridge 实例 + FakeStub 验证 skills/history RPC 构造
+        from astrbot._bridge.host import HostBridge
+        from astrbot._bridge.gen import plugin_pb2
+
+        calls = []
+
+        class FakeStub:
+            def ListSkills(self, req, timeout=30):
+                calls.append("ListSkills")
+                return plugin_pb2.SkillsResponse(skills_json=[b'{"name":"x","active":true}'])
+            def SetSkillActive(self, req, timeout=30):
+                calls.append(("SetSkillActive", req.name, req.active))
+                return plugin_pb2.Empty()
+            def DeleteSkill(self, req, timeout=30):
+                calls.append(("DeleteSkill", req.name))
+                return plugin_pb2.Empty()
+            def GetPlatformMessageHistory(self, req, timeout=30):
+                calls.append(("GetPMH", req.platform_id, req.user_id, req.limit))
+                return plugin_pb2.PMHistoryRecordsResponse(
+                    records_json=[b'{"id":7,"platform_id":"aiocqhttp","user_id":"g:1"}']
+                )
+            def InsertPlatformMessageHistory(self, req, timeout=30):
+                calls.append(("InsertPMH", req.platform_id, req.user_id))
+                return plugin_pb2.PMHistoryRecordResponse(record_json=b'{"id":99}')
+            def UpdatePlatformMessageHistory(self, req, timeout=30):
+                calls.append(("UpdatePMH", req.id))
+                return plugin_pb2.Empty()
+            def DeletePlatformMessageHistory(self, req, timeout=30):
+                calls.append(("DeletePMH", req.id))
+                return plugin_pb2.Empty()
+
+        bridge = HostBridge()
+        bridge._stub = FakeStub()
+        bridge._probed = True
+
+        self.assertEqual(len(bridge.list_skills()), 1)
+        self.assertTrue(bridge.set_skill_active("x", True))
+        self.assertTrue(bridge.delete_skill("y"))
+
+        recs = bridge.get_platform_message_history("aiocqhttp", "g:1", 50)
+        self.assertEqual(recs[0]["id"], 7)
+        ins = bridge.insert_platform_message_history(
+            "aiocqhttp", "g:1", {"type": "user", "message": ["hi"]}, max_messages=100
+        )
+        self.assertEqual(ins.get("id"), 99)
+        self.assertTrue(bridge.update_platform_message_history(7, {"x": 1}))
+        self.assertTrue(bridge.delete_platform_message_history(7))
+
+        self.assertIn("ListSkills", calls)
+        self.assertIn(("SetSkillActive", "x", True), calls)
+        self.assertIn(("DeleteSkill", "y"), calls)
+
+    def test_host_bridge_returns_empty_on_rpc_failure(self):
+        from astrbot._bridge.host import HostBridge
+
+        class FailingStub:
+            def ListSkills(self, req, timeout=30):
+                raise Exception("host down")
+            def GetPlatformMessageHistory(self, req, timeout=30):
+                raise Exception("host down")
+
+        bridge = HostBridge()
+        bridge._stub = FailingStub()
+        bridge._probed = True
+        # stub 调用失败 → 方法内部降级为空列表，不抛异常
+        self.assertEqual(bridge.list_skills(), [])
+        self.assertEqual(bridge.get_platform_message_history("a", "b", 10), [])
+
+
 class TestProtoEvent(unittest.TestCase):
     """P1：proto SDKEvent → Python Event 语义等价 + proto Component 往返。"""
 

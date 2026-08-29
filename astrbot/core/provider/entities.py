@@ -473,46 +473,6 @@ class Conversation:
         }
 
 
-class MediaResolver:
-    """媒体解析器（简化占位：解析 url/path/base64 图片到可发送形式）。
-
-    原版为 `astrbot.core.utils.media_utils.MediaResolver`（真正做下载 /
-    base64 编码 / 压缩），SDK 不引入图片处理依赖，这里仅解析输入引用
-    并原样返回 dict（含 url/type），供插件调用不报错。
-    """
-
-    def __init__(
-        self,
-        media_ref: str = "",
-        media_type: str = "image",
-        default_suffix: str | None = None,
-        **kwargs: Any,
-    ) -> None:
-        self.media_ref: str = media_ref or ""
-        self.media_type: str = media_type or "image"
-        self.default_suffix: str | None = default_suffix
-        self.kwargs: dict = kwargs or {}
-
-    def resolve(self, **kwargs: Any) -> dict:
-        """解析媒体引用为可发送形式的 dict（简化：原样返回）。"""
-        return {
-            "url": self.media_ref,
-            "type": self.media_type,
-            "media_type": self.media_type,
-            **(self.kwargs or {}),
-            **(kwargs or {}),
-        }
-
-    async def to_base64_data(self, strict: bool = False, target_format: str | None = None) -> dict:
-        """异步转为 base64 数据（简化：不真正编码，返回 resolve() 的 dict）。"""
-        return self.resolve(strict=strict, target_format=target_format)
-
-    def to_data_url(self) -> str:
-        """转为 data URL（简化：对 raw base64 输入做轻量包装，否则原样返回）。"""
-        ref = self.media_ref
-        if ref.startswith("data:"):
-            return ref
-        if ref.startswith("base64://"):
-            payload = ref[len("base64://"):]
-            return f"data:{self.media_type};base64,{payload}"
-        return ref
+# MediaResolver 唯一权威实现见 utils.media_utils（本路径 re-export 同对象，
+# 避免 SDK 内部出现两套同名不同义的 MediaResolver）。
+from astrbot.core.utils.media_utils import MediaResolver  # noqa: E402  re-export

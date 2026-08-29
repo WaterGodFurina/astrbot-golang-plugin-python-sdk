@@ -36,35 +36,12 @@ import copy
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from astrbot.core.agent.run_context import ContextWrapper  # noqa: F401  权威定义见 run_context.py（避免同名不同义）
+from astrbot.core.agent.run_context import NoContext, TContext  # noqa: F401  对齐本体 run_context 导出
 from astrbot.core.message.message_event_result import MessageEventResult
 from astrbot.core.utils.deprecation import deprecated
 
 ParametersType = dict[str, Any]
-
-
-@dataclass
-class ContextWrapper:
-    """工具 / Agent 运行的上下文包装（简化版，对齐本体 ContextWrapper 语义）。
-
-    - `contexts`：上下文数据列表（可空），工具可用 `get_context()` 获取；
-    - `wrapped`：被包装的对象（可空，如宿主侧调用上下文）。
-
-    插件在工具实现里通过构造（`ContextWrapper([ctx, ...])`）或宿主注入
-    （`wrapped`）拿到运行期上下文。
-    """
-
-    contexts: list | None = None
-    """上下文数据列表（可空）"""
-    wrapped: Any = None
-    """被包装的对象（可空）"""
-
-    def get_context(self) -> list | None:
-        """获取上下文数据列表（与构造时的第一个位置参数对应）。"""
-        return self.contexts
-
-    def set_context(self, contexts: list | None) -> None:
-        """设置上下文数据列表。"""
-        self.contexts = contexts
 
 
 @dataclass

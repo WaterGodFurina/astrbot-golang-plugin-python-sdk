@@ -29,6 +29,7 @@ from astrbot.core.provider.func_tool_manager import llm_tools
 from astrbot.core.star.command_management import sync_command_configs
 from astrbot.core.star.error_messages import format_plugin_error
 from astrbot.core.star.filter.permission import PermissionType, PermissionTypeFilter
+from astrbot.core.star.star import StarMetadata  # noqa: F401  re-export（对齐本体 star_manager 路径可 import）
 from astrbot.core.star.updater import PLUGIN_METADATA_FILENAMES, _PluginUpdater
 from astrbot.core.utils.astrbot_path import (
     get_astrbot_config_path,

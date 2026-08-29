@@ -789,6 +789,153 @@ class HostBridge:
                 out.append(data)
         return out
 
+    # ── 技能（Skills，宿主 internal/skills 能力）─────────────────────
+    def list_skills(self, active_only: bool = False, runtime: str = "") -> list[dict]:
+        """列出宿主全部技能（每条 SkillInfo dict）。"""
+        if active_only:
+            all_skills = self.list_skills()
+            return [s for s in all_skills if s.get("active")]
+        if not self.ensure_connected():
+            return []
+        try:
+            resp = self._stub.ListSkills(plugin_pb2.Empty(), timeout=30)
+        except Exception as e:
+            logger.warning(f"ListSkills 失败（宿主可能不支持）: {e}")
+            return []
+        out: list[dict] = []
+        for raw in resp.skills_json:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                out.append(data)
+        return out
+
+    def set_skill_active(self, name: str, active: bool) -> bool:
+        """启用/禁用指定技能（薄壳转发宿主）。"""
+        if not self.ensure_connected():
+            return False
+        try:
+            self._stub.SetSkillActive(
+                plugin_pb2.SetSkillActiveRequest(name=name, active=bool(active)),
+                timeout=30,
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"SetSkillActive({name}) 失败: {e}")
+            return False
+
+    def delete_skill(self, name: str) -> bool:
+        """删除指定技能（薄壳转发宿主）。"""
+        if not self.ensure_connected():
+            return False
+        try:
+            self._stub.DeleteSkill(
+                plugin_pb2.DeleteSkillRequest(name=name),
+                timeout=30,
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"DeleteSkill({name}) 失败: {e}")
+            return False
+
+    # ── 平台消息历史（宿主 db platform_message_history）─────────────
+    def get_platform_message_history(
+        self, platform_id: str, user_id: str, limit: int = 200
+    ) -> list[dict]:
+        """按平台/用户取最近 limit 条平台消息记录。"""
+        if not self.ensure_connected():
+            return []
+        try:
+            resp = self._stub.GetPlatformMessageHistory(
+                plugin_pb2.GetPMHistoryRequest(
+                    platform_id=platform_id,
+                    user_id=user_id,
+                    limit=int(limit),
+                ),
+                timeout=30,
+            )
+        except Exception as e:
+            logger.warning(f"GetPlatformMessageHistory 失败: {e}")
+            return []
+        out: list[dict] = []
+        for raw in resp.records_json:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                out.append(data)
+        return out
+
+    def insert_platform_message_history(
+        self,
+        platform_id: str,
+        user_id: str,
+        content: dict,
+        sender_id: str | None = None,
+        llm_checkpoint_id: str | None = None,
+        max_messages: int = 0,
+    ) -> dict:
+        """插入一条平台消息历史记录，返回完整记录 dict（宿主持久化）。"""
+        if not self.ensure_connected():
+            return {}
+        try:
+            resp = self._stub.InsertPlatformMessageHistory(
+                plugin_pb2.InsertPMHistoryRequest(
+                    platform_id=platform_id,
+                    user_id=user_id,
+                    sender_id=sender_id or "",
+                    content_json=json.dumps(content, ensure_ascii=False).encode(),
+                    llm_checkpoint_id=llm_checkpoint_id or "",
+                    max_messages=int(max_messages or 0),
+                ),
+                timeout=30,
+            )
+        except Exception as e:
+            logger.warning(f"InsertPlatformMessageHistory 失败: {e}")
+            return {}
+        if not resp.record_json:
+            return {}
+        data = json.loads(resp.record_json)
+        return data if isinstance(data, dict) else {}
+
+    def update_platform_message_history(
+        self,
+        message_id: int,
+        content: dict | None = None,
+        llm_checkpoint_id: str | None = None,
+    ) -> bool:
+        """更新一条平台消息历史记录。"""
+        if not self.ensure_connected():
+            return False
+        try:
+            self._stub.UpdatePlatformMessageHistory(
+                plugin_pb2.UpdatePMHistoryRequest(
+                    id=int(message_id),
+                    content_json=(
+                        json.dumps(content, ensure_ascii=False).encode()
+                        if content is not None
+                        else b""
+                    ),
+                    llm_checkpoint_id=llm_checkpoint_id or "",
+                ),
+                timeout=30,
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"UpdatePlatformMessageHistory({message_id}) 失败: {e}")
+            return False
+
+    def delete_platform_message_history(self, message_id: int) -> bool:
+        """按 ID 删除一条平台消息历史记录。"""
+        if not self.ensure_connected():
+            return False
+        try:
+            self._stub.DeletePlatformMessageHistory(
+                plugin_pb2.DeletePMHistoryRequest(id=int(message_id)),
+                timeout=30,
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"DeletePlatformMessageHistory({message_id}) 失败: {e}")
+            return False
+
     def get_star(self, name: str) -> dict | None:
         if not self.ensure_connected():
             return None
