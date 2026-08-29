@@ -13,3 +13,7 @@ class ProviderNotFoundError(Exception):
 
 class DependencyConflictError(Exception):
     """当插件依赖与当前环境已安装依赖冲突时抛出（pip 安装失败时包装）。"""
+
+
+class KnowledgeBaseUploadError(Exception):
+    """知识库文档上传/处理失败（faiss_impl 文档存储等使用）。"""

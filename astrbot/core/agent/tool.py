@@ -109,6 +109,12 @@ class ToolSchema:
 
 @dataclass
 class FunctionTool(ToolSchema):
+    # 兼容 Python 本体的泛型注解写法 `class MyTool(FunctionTool[TContext])`：
+    # 本运行时 FunctionTool 为普通 dataclass（不做类型参数化校验），此处接受
+    # 下标语法并返回自身，使 livingmemory 等插件的 `FunctionTool[AstrAgentContext]`
+    # 子类化语句在 import 期不炸。
+    __class_getitem__ = classmethod(lambda cls, item: cls)
+
     """LLM 函数工具（普通 dataclass，插件可子类化）。
 
     字段全部带默认值：插件子类既可整类覆写（dataclass 子类化），也可在
