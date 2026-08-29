@@ -139,7 +139,7 @@ AstrMessageEvent.from_proto()   ← P1 新增
   回退 `image_base64`。
 
 **版本纪律**：行为不兼容的变更必须 bump `P1_PROTOCOL_VERSION` 与本仓库 tag
-（当前 v0.8.0）。
+（当前 v0.9.0）。
 
 ## 宿主如何消费本 Go 模块
 
