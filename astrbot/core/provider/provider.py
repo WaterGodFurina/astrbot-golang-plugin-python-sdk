@@ -18,6 +18,8 @@ import logging
 import os
 from typing import Any
 
+import httpx
+
 from astrbot.core.agent.message import ContentPart, Message, is_checkpoint_message
 from astrbot.core.provider.entities import (
     ProviderMeta,
@@ -339,7 +341,16 @@ class STTProvider(Provider):
 
 
 class EmbeddingProvider(Provider):
-    """Embedding Provider（宿主 ListProviders 返回 embedding 能力）。"""
+    """Embedding Provider（宿主 ListProviders 返回 embedding 能力）。
+
+    OpenAI 兼容直调实现：宿主 ListProviders/GetUsingProvider 在 payload 中
+    透传 ``key`` 与 ``api_base`` 时（provider_config），经 httpx 调用
+    ``{api_base}/embeddings``。凭据缺失时保持降级语义（返回空/0），不影响
+    不依赖 embedding 的插件。
+    """
+
+    # (api_base, model) → dim，进程级缓存避免重复探测。
+    _dim_cache: dict[tuple[str, str], int] = {}
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -347,17 +358,71 @@ class EmbeddingProvider(Provider):
         if not isinstance(raw_pt, str) or not raw_pt:
             self.provider_type = ProviderType.EMBEDDING
 
+    def _credentials(self) -> tuple[str, str, str]:
+        cfg = self.provider_config
+        api_base = str(
+            cfg.get("api_base") or cfg.get("base_url") or ""
+        ).rstrip("/")
+        key = str(cfg.get("key") or cfg.get("api_key") or "")
+        model = self.model_name or str(cfg.get("model") or "")
+        return api_base, key, model
+
     async def get_embedding(self, text: str) -> list[float]:
-        """获取单个文本的向量（降级：宿主无 Embedding RPC，返回 []）。"""
-        return []
+        """获取单个文本的向量。"""
+        vecs = await self.get_embeddings([text])
+        return vecs[0] if vecs else []
 
     async def get_embeddings(self, texts: list[str]) -> list[list[float]]:
-        """批量获取文本的向量（降级：宿主无 Embedding RPC，返回 []）。"""
-        return []
+        """批量获取文本向量（OpenAI 兼容 /embeddings，按 index 保序）。"""
+        api_base, key, model = self._credentials()
+        if not (api_base and key and model) or not texts:
+            # 降级：宿主未透传凭据（旧版宿主），维持空返回语义。
+            return []
+        headers = {"Authorization": f"Bearer {key}"}
+        payload = {"input": texts, "model": model}
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                f"{api_base}/embeddings", json=payload, headers=headers
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data") or []
+        data.sort(key=lambda d: d.get("index", 0))
+        out = [list(d.get("embedding") or []) for d in data]
+        if out and out[0]:
+            self._dim_cache[(api_base, model)] = len(out[0])
+        return out
 
     def get_dim(self) -> int:
-        """获取向量的维度（降级：宿主无 Embedding RPC，返回 0）。"""
-        return 0
+        """获取向量维度；缓存未命中时同步探测一次短文本。
+
+        FaissVecDB 构造期同步调用，探测用同步 httpx 一次性开销可接受。
+        探测失败/无凭据时返回 0（降级语义，与旧版一致）。
+        """
+        api_base, key, model = self._credentials()
+        if not (api_base and key and model):
+            return 0
+        cached = self._dim_cache.get((api_base, model))
+        if cached:
+            return cached
+        dim = int(self.provider_config.get("embed_dim") or 0)
+        if dim:
+            self._dim_cache[(api_base, model)] = dim
+            return dim
+        try:
+            resp = httpx.post(
+                f"{api_base}/embeddings",
+                json={"input": "dim", "model": model},
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data") or []
+            if data and data[0].get("embedding"):
+                dim = len(data[0]["embedding"])
+                self._dim_cache[(api_base, model)] = dim
+        except Exception as e:  # noqa: BLE001 — 探测失败降级 0
+            logger.warning(f"EmbeddingProvider.get_dim 探测失败: {e}")
+        return dim
 
 
 class RerankProvider(Provider):
