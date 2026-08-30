@@ -159,6 +159,50 @@ def _count_positional(handler) -> int:
         return 1
 
 
+class _ToolTContext:
+    """原版 ContextWrapper.context 的 TContext 载体。
+
+    原版（astrbot-py）插件在工具实现里经 ``context.context.event`` 取事件
+    （如 livingmemory 的记忆检索工具），桥侧没有 agent 运行时，无法构造完整
+    TContext——仅挂 ``.event`` 满足该访问路径，其余字段由插件自行兜底。
+    """
+
+    def __init__(self, event):
+        self.event = event
+
+
+def _tool_first_arg_is_context(handler) -> bool:
+    """判断工具 handler 首参是否为原版 ContextWrapper 语境（call 型）。
+
+    原版约定 ``FunctionTool.call(context: ContextWrapper, **kwargs)``，插件经
+    ``context.context.event`` 取事件；SDK 文档另约定 ``run(event, **kwargs)``
+    直接收事件。add_llm_tools 把 run/call 统一抽成 handler 后类型信息丢失，
+    桥无法直接区分，只能按签名判定：
+
+    - 首参名 event/e/msg（或注解含 AstrMessageEvent）→ run 型，传事件本身；
+    - 首参名 context/ctx/wrapper（或注解含 ContextWrapper/AstrAgentContext）
+      → call 型，包一层 ContextWrapper；
+    - 签名不可解析时保持旧行为（传事件），不改变既有插件的调用约定。
+    """
+    try:
+        sig = inspect.signature(handler)
+        first = next(iter(sig.parameters.values()), None)
+    except (ValueError, TypeError):
+        return False
+    if first is None:
+        return False
+    name = (first.name or "").lower()
+    ann = getattr(first, "annotation", None)
+    ann_name = getattr(ann, "__name__", None) or str(ann or "")
+    if "AstrMessageEvent" in ann_name:
+        return False
+    if "ContextWrapper" in ann_name or "AstrAgentContext" in ann_name:
+        return True
+    if name in ("event", "e", "msg", "message"):
+        return False
+    return name in ("context", "ctx", "wrapper")
+
+
 def _hook_args_for_payload(handler, event, payload, event_name=None):
     """按原版签名构造带 payload 钩子的位置参数列表。
 
@@ -889,7 +933,15 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         handler = tool.handler
         bound = _bind(handler, self.inst)
         try:
-            results = _call(bound, event, **args)
+            first_arg = event
+            if _tool_first_arg_is_context(bound):
+                # 原版 call 型工具：首参为 ContextWrapper（context.context.event
+                # 取事件）。裸传 event 会让插件 AttributeError（livingmemory
+                # recall_long_term_memory 实测炸点），进而以 internal_error 回给 LLM。
+                from astrbot.core.agent.run_context import ContextWrapper
+
+                first_arg = ContextWrapper(context=_ToolTContext(event), messages=[])
+            results = _call(bound, first_arg, **args)
         except Exception as e:
             from astrbot.core.utils.error_redaction import safe_error
 
