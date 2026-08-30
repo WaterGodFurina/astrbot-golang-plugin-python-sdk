@@ -1003,6 +1003,73 @@ class TestToolFirstArg(unittest.TestCase):
         self.assertIs(got, sentinel)
 
 
+class TestEmbeddingBatch(unittest.TestCase):
+    """EmbeddingProvider.get_embeddings_batch 默认实现（对齐原版语义）。"""
+
+    def _make_provider(self, get_embeddings):
+        from astrbot.core.provider.provider import EmbeddingProvider
+
+        class P(EmbeddingProvider):
+            def __init__(self):
+                self.provider_config = {}
+                self.model_name = "t"
+
+            async def get_embeddings(self, texts):
+                return await get_embeddings(texts)
+
+            def get_dim(self):
+                return 0
+
+        return P()
+
+    def test_batch_order_and_chunking(self):
+        """分片调用且结果按原顺序拼接。"""
+        import asyncio
+
+        seen = []
+
+        async def fake(texts):
+            seen.append(list(texts))
+            return [[float(len(texts))] * 2 for _ in texts]
+
+        p = self._make_provider(fake)
+        out = asyncio.run(
+            p.get_embeddings_batch(["a", "b", "c", "d", "e"], batch_size=2)
+        )
+        # 3 片：[a,b] [c,d] [e]，fake 返回向量的值=该分片长度
+        self.assertEqual([len(b) for b in seen], [2, 2, 1])
+        self.assertEqual(len(out), 5)
+        self.assertEqual(out[0], [2.0, 2.0])
+        self.assertEqual(out[4], [1.0, 1.0])
+
+    def test_empty_input(self):
+        import asyncio
+
+        async def fake(texts):
+            return []
+
+        p = self._make_provider(fake)
+        out = asyncio.run(p.get_embeddings_batch([]))
+        self.assertEqual(out, [])
+
+    def test_progress_callback_async(self):
+        import asyncio
+
+        calls = []
+
+        async def cb(cur, total):
+            calls.append((cur, total))
+
+        async def fake(texts):
+            return [[0.0] for _ in texts]
+
+        p = self._make_provider(fake)
+        asyncio.run(
+            p.get_embeddings_batch(["x", "y"], batch_size=1, progress_callback=cb)
+        )
+        self.assertEqual(calls[-1], (2, 2))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2, exit=False)
     TestP1Benchmark.run()
