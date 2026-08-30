@@ -203,7 +203,7 @@ def component_to_json(comp: BaseMessageComponent, _depth: int = 0) -> dict:
     return {"type": "Unknown", "text": getattr(comp, "text", "") or str(comp)}
 
 
-def result_to_json(result: MessageEventResult | str | None) -> list[dict]:
+def result_to_json(result: MessageEventResult | str | None) -> tuple[list[dict], bool]:
     """把插件 handler 返回的结果转为 Component JSON 列表。
 
     仅用于对外兼容/字典结果的业务场景；RPC 响应链已改走

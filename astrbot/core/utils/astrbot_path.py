@@ -42,10 +42,6 @@ def get_astrbot_config_path() -> str:
     return os.path.join(get_astrbot_data_path(), "config")
 
 
-def get_astrbot_plugin_data_path() -> str:
-    return os.path.realpath(os.path.join(get_astrbot_data_path(), "plugin_data"))
-
-
 def get_astrbot_webui_path() -> str:
     return os.path.join(get_astrbot_data_path(), "webui")
 

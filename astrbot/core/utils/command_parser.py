@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 @dataclass
 class CommandTokens:
-    tokens: list[str] = None
+    tokens: list[str] | None = None
 
     @property
     def len(self) -> int:

@@ -613,7 +613,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         except json.JSONDecodeError as e:
             logger.error(f"FeedSessionWait: 事件解析失败: {e}")
             return plugin_pb2.FeedSessionWaitResponse(handled=False)
-        if not event_data:
+        if not event:
             return plugin_pb2.FeedSessionWaitResponse(handled=False)
         try:
             # try_trigger 是 async 且触碰常驻 loop 上的异步状态（waiter 的
@@ -661,6 +661,9 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                 except json.JSONDecodeError as e:
                     logger.error(f"HandleHook(aiocqhttp): 事件解析失败: {e}")
                     return resp
+                from astrbot._bridge.serialize import proto_to_event_dict
+
+                event_data = proto_to_event_dict(request.event)
                 _aiocqhttp_dispatch(event_data.get("raw_message"))
             except Exception as e:  # noqa: BLE001
                 logger.error(f"aiocqhttp 事件分发失败: {e}")
@@ -677,6 +680,9 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                 except json.JSONDecodeError as e:
                     logger.error(f"HandleHook(botpy): 事件解析失败: {e}")
                     return resp
+                from astrbot._bridge.serialize import proto_to_event_dict
+
+                event_data = proto_to_event_dict(request.event)
                 _botpy_dispatch(event_data)
             except Exception as e:  # noqa: BLE001
                 logger.error(f"botpy 事件分发失败: {e}")
@@ -692,6 +698,9 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                 except json.JSONDecodeError as e:
                     logger.error(f"HandleHook(telegram): 事件解析失败: {e}")
                     return resp
+                from astrbot._bridge.serialize import proto_to_event_dict
+
+                event_data = proto_to_event_dict(request.event)
                 _telegram_dispatch(event_data)
             except Exception as e:  # noqa: BLE001
                 logger.error(f"telegram 事件分发失败: {e}")
