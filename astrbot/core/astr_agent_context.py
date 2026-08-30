@@ -26,7 +26,7 @@ class AstrAgentContext:
 
 
 # AgentContextWrapper 别名：与本体 `ContextWrapper[AstrAgentContext]` 等价。
-AgentContextWrapper = ContextWrapper
+AgentContextWrapper = ContextWrapper[AstrAgentContext]
 
 
 __all__ = ["AstrAgentContext", "AgentContextWrapper"]

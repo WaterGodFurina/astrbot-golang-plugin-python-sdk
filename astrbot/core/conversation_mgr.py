@@ -387,3 +387,77 @@ class ConversationManager:
         if len(contexts) % page_size != 0:
             total_pages += 1
         return paged, total_pages
+
+    async def add_message_pair(
+        self,
+        cid: str,
+        user_message,
+        assistant_message,
+    ) -> None:
+        """向会话历史追加一条 user-assistant 消息对（对齐本体 add_message_pair）。
+
+        Go 宿主会话历史由宿主原生维护（插件一般不直接追加），SDK 薄壳：
+        请求 session_conversations 内存映射存在时仅本地记录行程，不写宿主；
+        会话 cid 不在映射中（可能是宿主创建）时静默忽略——插件调用不报错。
+        """
+        if not cid:
+            return
+        if isinstance(user_message, dict):
+            u = user_message
+        else:
+            u = getattr(user_message, "to_dict", lambda: {"role": "user"})()
+        if isinstance(assistant_message, dict):
+            a = assistant_message
+        else:
+            a = getattr(assistant_message, "to_dict", lambda: {"role": "assistant"})()
+        # 宿主会话历史无增补通道：仅当 cid 是我们新建的（本会话键有）时
+        # 本地记一笔，避免误导（宿主侧不读），但不抛错。
+        umo = next((k for k, v in self.session_conversations.items() if v == cid), None)
+        if umo is not None:
+            logger.debug(f"add_message_pair({cid}) 记录到本地（宿主历史不追加）")
+
+    async def get_filtered_conversations(
+        self,
+        page: int = 1,
+        page_size: int = 20,
+        platform_ids: list[str] | None = None,
+        search_query: str = "",
+        include_history: bool = True,
+        **kwargs,
+    ) -> tuple[list[Any], int]:
+        """获取过滤后的会话列表（对齐本体 get_filtered_conversations）。
+
+        基于宿主 get_conversations 拉取后按 platform_ids / search_query 过滤。
+        返回 (Conversation 对象列表, 总数)。
+        """
+        try:
+            rows = await self.get_conversations("")
+        except Exception as e:
+            logger.warning(f"get_filtered_conversations 失败: {e}")
+            return [], 0
+        filtered: list[Any] = []
+        for r in rows:
+            if platform_ids and r.get("platform_id") not in platform_ids:
+                continue
+            if search_query:
+                hay = " ".join(
+                    str(r.get(k) or "")
+                    for k in ("title", "user_id", "platform_id", "persona_id")
+                )
+                if search_query.lower() not in hay.lower():
+                    continue
+            filtered.append(r)
+        total = len(filtered)
+        page = max(1, int(page or 1))
+        page_size = max(1, int(page_size or 20))
+        paged = filtered[(page - 1) * page_size : page * page_size]
+        # 转 Conversation 包装（如宿主返回 dict）
+        out = []
+        for item in paged:
+            if isinstance(item, dict):
+                from astrbot.core.conversation_mgr import Conversation
+
+                out.append(Conversation(item))
+            else:
+                out.append(item)
+        return out, total

@@ -9,6 +9,7 @@ import re
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Callable
 
 from astrbot import logger
@@ -620,6 +621,28 @@ class FuncTool:
 class FunctionToolManager:
     def __init__(self) -> None:
         self.func_list: list[FuncTool] = []
+        # MCP 服务运行期状态（只读视图来源；宿主 MCP 由宿主原生管理，
+        # 插件侧通常不主动连接，此处默认空表，插件自建 MCPClient 不入表）。
+        self._mcp_server_runtimes: dict[str, Any] = {}
+        self._mcp_client_dict_view = _MCPClientDictView(self._mcp_server_runtimes)
+        self._mcp_server_runtime_view: Mapping[str, Any] = MappingProxyType(
+            self._mcp_server_runtimes
+        )
+
+    @property
+    def mcp_client_dict(self) -> Mapping[str, Any]:
+        """只读的 MCP 客户端映射视图（对齐本体 mcp_client_dict）。"""
+        return self._mcp_client_dict_view
+
+    @property
+    def mcp_server_runtime_view(self) -> Mapping[str, Any]:
+        """只读的 MCP 服务运行期元数据视图（对齐本体）。"""
+        return self._mcp_server_runtime_view
+
+    @property
+    def mcp_server_runtime(self) -> Mapping[str, Any]:
+        """向后兼容的只读运行期视图（对齐本体已弃用的别名）。"""
+        return self._mcp_server_runtime_view
 
     def spec_to_func(self, name: str, func_args: list[dict], desc: str, handler: Callable) -> FuncTool:
         params = {"type": "object", "properties": {}}
@@ -660,6 +683,171 @@ class FunctionToolManager:
         if not only_active:
             return list(self.func_list)
         return [f for f in self.func_list if f.active]
+
+    # ── 对齐原版 FuncCall 方法名（兼容别名）──────────────────────────
+    def get_func(self, name) -> FuncTool | None:
+        """按名称取工具（优先返回已激活的工具，对齐原版 get_func 语义）。"""
+        for f in reversed(self.func_list):
+            if f.name == name and getattr(f, "active", True):
+                return f
+        for f in reversed(self.func_list):
+            if f.name == name:
+                return f
+        return None
+
+    def empty(self) -> bool:
+        """工具注册表是否为空。"""
+        return len(self.func_list) == 0
+
+    def activate_llm_tool(self, name: str, star_map: dict | None = None) -> bool:
+        """启用指定 LLM 工具（对齐原版 activate_llm_tool 签名）。"""
+        func_tool = self.get_func(name)
+        if func_tool is None:
+            return False
+        if star_map and getattr(func_tool, "handler_module_path", None) in star_map:
+            meta = star_map[getattr(func_tool, "handler_module_path")]
+            if getattr(meta, "activated", True) is False:
+                raise ValueError(
+                    f"此函数调用工具所属的插件已被禁用，请先在管理面板启用再激活此工具。",
+                )
+        func_tool.active = True
+        return True
+
+    def deactivate_llm_tool(self, name: str) -> bool:
+        """禁用指定 LLM 工具（对齐原版 deactivate_llm_tool 签名）。"""
+        func_tool = self.get_func(name)
+        if func_tool is None:
+            return False
+        func_tool.active = False
+        return True
+
+    def get_full_tool_set(self) -> ToolSet:
+        """获取完整工具集（对齐原版 get_full_tool_set 语义，无权限守卫包装）。"""
+        tool_set = ToolSet()
+        for tool in self.func_list:
+            tool_set.add_tool(tool)
+        return tool_set
+
+    def is_builtin_tool(self, name: str) -> bool:
+        """判断是否为宿主内置工具（对齐原版 is_builtin_tool 语义）。"""
+        from astrbot.core.tools.registry import get_builtin_tool_class
+
+        try:
+            return get_builtin_tool_class(name) is not None
+        except Exception:
+            return False
+
+    def get_builtin_tool(self, tool) -> "FuncTool":
+        """按名称/类获取宿主内置工具（SDK 薄壳：宿主原生化，未注册抛 KeyError）。"""
+        from astrbot.core.tools.registry import (
+            get_builtin_tool_class as _cls,
+            get_builtin_tool_name as _name,
+        )
+
+        tool_cls = None
+        if isinstance(tool, str):
+            tool_cls = _cls(tool)
+            if tool_cls is None:
+                raise KeyError(f"Builtin tool {tool} is not registered.")
+        elif isinstance(tool, type):
+            if _name(tool) is None:
+                raise KeyError(
+                    f"Builtin tool class {tool.__module__}.{tool.__name__} is not registered.",
+                )
+            tool_cls = tool
+        else:
+            raise TypeError("tool must be a builtin tool name or FunctionTool class.")
+        return tool_cls()  # type: ignore
+
+    def iter_builtin_tools(self) -> list["FuncTool"]:
+        """遍历宿主内置工具实例列表（对齐本体 iter_builtin_tools）。"""
+        from astrbot.core.tools.registry import iter_builtin_tool_classes
+
+        return [self.get_builtin_tool(cls) for cls in iter_builtin_tool_classes()]
+
+    # ── MCP 生命周期（宿主 MCP 原生管理；SDK 薄壳保证签名/调用不抛错）───────
+    def mcp_config_path(self) -> str:
+        """MCP 配置文件路径（对齐本体：数据目录下 mcp_server.json）。"""
+        return os.path.join(get_astrbot_data_path(), "mcp_server.json")
+
+    def load_mcp_config(self) -> dict:
+        """读取 MCP 配置（SDK 薄壳：文件缺失时返回空结构，不写盘）。"""
+        try:
+            with open(self.mcp_config_path(), encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {"mcpServers": {}}
+        except (OSError, ValueError):
+            return {"mcpServers": {}}
+
+    def save_mcp_config(self, config: dict) -> bool:
+        """保存 MCP 配置（SDK 薄壳：宿主配置由宿主管理，此处仅返回 True）。"""
+        return True
+
+    async def init_mcp_clients(
+        self, raise_on_all_failed: bool = False
+    ) -> "MCPInitSummary":
+        """从 mcp_server.json 初始化 MCP 服务（SDK 薄壳：宿主原生管理）。
+
+        宿主 MCP 服务由宿主侧连接管理；此处不主动连接，返回空摘要。
+        """
+        return MCPInitSummary()
+
+    async def enable_mcp_server(
+        self,
+        name: str,
+        config: dict,
+        shutdown_event: "asyncio.Event | None" = None,
+        timeout: "float | int | str | None" = None,
+    ) -> None:
+        """启用一个 MCP 服务（SDK 薄壳：宿主原生管理，不在此连接）。"""
+
+    async def disable_mcp_server(
+        self,
+        name: str | None = None,
+        timeout: float = 10,
+    ) -> None:
+        """停用一个/全部 MCP 服务（SDK 薄壳：宿主原生管理，不在此连接）。"""
+
+    async def activate_llm_tool_async(self, name: str, star_map: dict) -> bool:
+        """异步启用 LLM 工具（对齐本体，内部复用 activate_llm_tool）。"""
+        return self.activate_llm_tool(name, star_map)
+
+    async def deactivate_llm_tool_async(self, name: str) -> bool:
+        """异步禁用 LLM 工具（对齐本体，内部复用 deactivate_llm_tool）。"""
+        return self.deactivate_llm_tool(name)
+
+    def get_func_desc_openai_style(
+        self, omit_empty_parameter_field: bool = False
+    ) -> list:
+        """把全部工具转成 OpenAI 函数描述（对齐原版 get_func_desc_openai_style）。"""
+        out = []
+        for f in self.list_funcs(only_active=True):
+            schema = f.to_schema()
+            fn = schema.get("function", schema)
+            if omit_empty_parameter_field and not (fn.get("parameters") or {}).get("properties"):
+                fn.pop("parameters", None)
+            out.append(schema)
+        return out
+
+    def get_func_desc_anthropic_style(self) -> list:
+        """把全部工具转成 Anthropic 工具描述（对齐原版签名）。"""
+        return [
+            {
+                "name": f.name,
+                "description": f.description or "",
+                "input_schema": f.parameters or {"type": "object", "properties": {}},
+            }
+            for f in self.list_funcs(only_active=True)
+        ]
+
+    def get_func_desc_google_genai_style(self) -> dict:
+        """把全部工具转成 Google GenAI 工具描述（对齐原版签名）。"""
+        return {
+            "functionDeclarations": [
+                {"name": f.name, "description": f.description or "", "parameters": f.parameters or {}}
+                for f in self.list_funcs(only_active=True)
+            ]
+        }
 
 
 llm_tools = FunctionToolManager()

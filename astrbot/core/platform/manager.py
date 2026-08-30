@@ -41,5 +41,14 @@ class PlatformManager(_PlatformManagerStub):
         """全部平台统计（SDK 薄壳：宿主经 CallAction 提供，此处返回空）。"""
         return {}
 
+    async def load_platform(self, platform_config: dict) -> None:
+        """实例化一个平台（SDK 薄壳：宿主平台原生运行，no-op）。"""
+
+    async def reload(self, platform_config: dict) -> None:
+        """重载一个平台（SDK 薄壳：宿主侧原生，no-op）。"""
+
+    async def terminate_platform(self, platform_id: str) -> None:
+        """终止一个平台（SDK 薄壳：宿主侧原生，no-op）。"""
+
 
 __all__ = ["Platform", "PlatformManager", "PlatformStatus"]

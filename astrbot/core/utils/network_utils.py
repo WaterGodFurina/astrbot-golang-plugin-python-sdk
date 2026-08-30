@@ -4,6 +4,7 @@ httpx 非本 SDK 的强制依赖，故采用可选导入：未安装时仅按常
 网络异常判断。
 """
 import logging
+from typing import Any
 
 logger = logging.getLogger("astrbot")
 
@@ -72,3 +73,33 @@ def log_connection_failure(
         logger.error(
             f"[{provider_label}] Network connection failed ({error_type}): {error}"
         )
+
+
+def create_proxy_client(
+    provider_label: str,
+    proxy: str | None = None,
+    headers: dict[str, str] | None = None,
+    verify: "object | None" = None,
+    httpx_module: Any = None,
+):
+    """创建带代理配置的 httpx AsyncClient（对齐原版 create_proxy_client）。
+
+    httpx 为可选依赖：未安装时返回 None（调用方需自行降级）；安装时构造
+    httpx.AsyncClient（proxy / headers / verify 透传）。
+    """
+    del provider_label  # 仅用于日志前缀，SDK 打点见 log_connection_failure
+    try:
+        import httpx
+
+        if httpx_module is not None:
+            httpx = httpx_module
+    except ImportError:
+        return None
+    kwargs: dict = {"timeout": 30.0}
+    if proxy:
+        kwargs["proxy"] = proxy
+    if headers:
+        kwargs["headers"] = headers
+    if verify is not None:
+        kwargs["verify"] = verify
+    return httpx.AsyncClient(**kwargs)

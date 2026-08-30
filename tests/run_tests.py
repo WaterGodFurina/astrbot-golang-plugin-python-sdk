@@ -584,11 +584,14 @@ class TestSkillsHistoryBridge(unittest.TestCase):
     def test_build_skills_prompt_empty_and_markdown(self):
         from astrbot.core.skills.skill_manager import SkillInfo, build_skills_prompt, SkillManager
 
-        self.assertEqual(build_skills_prompt([]), "")
+        # 对齐本体：空列表也返回完整技能清单模板（与 astrbot-py 输出一致）
+        empty_out = build_skills_prompt([])
+        self.assertIn("## Skills", empty_out)
+        self.assertIn("### Available skills", empty_out)
         skills = [SkillInfo(name="test", description="desc", path="/x", active=True)]
         out = build_skills_prompt(skills)
-        self.assertIn("## test", out)
-        self.assertIn("desc", out)
+        self.assertIn("- **test**: desc", out)
+        self.assertIn("File: `/x`", out)
 
         # SkillInfo.from_dict / to_dict 往返
         s = SkillInfo.from_dict({"name": "n", "description": "d", "path": "p", "active": True})

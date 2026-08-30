@@ -48,7 +48,7 @@ class ContextWrapper(Generic[TContext]):
 
 
 # 空上下文别名（对齐本体 NoContext = ContextWrapper[None]）
-NoContext = ContextWrapper
+NoContext = ContextWrapper[None]
 
 
 __all__ = ["ContextWrapper", "NoContext", "TContext"]

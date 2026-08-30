@@ -182,6 +182,22 @@ class StarHandlerRegistry:
             and (h.extras_configs.get("activated", True) is not False)
         ]
 
+    def get_handlers_by_module_name(
+        self,
+        module_name: str,
+    ) -> list["StarHandlerMetadata"]:
+        """按 handler 模块路径取全部 handler（对齐本体 StarHandlerRegistry）。"""
+        return [
+            handler
+            for handler in self._handlers
+            if handler.handler_module_path == module_name
+        ]
+
+    def remove(self, handler: "StarHandlerMetadata") -> None:
+        """从注册表移除指定 handler（对齐本体 StarHandlerRegistry.remove）。"""
+        self.star_handlers_map.pop(handler.handler_full_name, None)
+        self._handlers = [h for h in self._handlers if h != handler]
+
     def all(self) -> list[StarHandlerMetadata]:
         return list(self._handlers)
 

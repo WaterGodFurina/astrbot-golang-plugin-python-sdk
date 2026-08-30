@@ -15,32 +15,27 @@ _FUTURE_TASK_SCHEMA: dict = {
         "action": {
             "type": "string",
             "enum": ["create", "edit", "delete", "list"],
-            "description": (
-                "Action to perform. 'list' takes no parameters. 'delete' "
-                "requires only 'job_id'. 'edit' requires 'job_id' plus the "
-                "fields to change."
-            ),
+            "description": "Action to perform. 'list' takes no parameters. 'delete' requires only 'job_id'. 'edit' requires 'job_id' plus the fields to change.",
         },
-        "name": {"type": "string", "description": "Optional task label."},
+        "name": {
+            "type": "string",
+            "description": "Optional task label.",
+        },
         "cron_expression": {
             "type": "string",
-            "description": (
-                "Cron expression for a recurring schedule, e.g. '0 8 * * *'."
-            ),
+            "description": "Cron expression for a recurring schedule, e.g. '0 8 * * *' or '0 23 * * mon-fri'. Prefer named weekdays like 'mon-fri' or 'sat,sun' over numeric ranges like '1-5'.",
         },
         "note": {
             "type": "string",
-            "description": (
-                "Detailed instructions for your future agent to execute when it wakes."
-            ),
+            "description": "Detailed instructions for your future agent to execute when it wakes.",
         },
         "run_once": {
             "type": "boolean",
-            "description": "Run only once and delete after execution.",
+            "description": "Run only once and delete after execution. Use with run_at.",
         },
         "run_at": {
             "type": "string",
-            "description": "ISO datetime for one-time execution.",
+            "description": "ISO datetime for one-time execution, e.g. 2026-02-02T08:00:00+08:00.",
         },
         "job_id": {
             "type": "string",

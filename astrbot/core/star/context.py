@@ -631,6 +631,38 @@ class Context:
         resp.result_chain = MessageChain([Plain(text)])
         return resp
 
+    async def tool_loop_agent(
+        self,
+        *,
+        event,
+        chat_provider_id: str,
+        prompt: str | None = None,
+        image_urls: list[str] | None = None,
+        audio_urls: list[str] | None = None,
+        tools=None,
+        system_prompt: str | None = None,
+        contexts: list | None = None,
+        max_steps: int = 30,
+        tool_call_timeout: int = 120,
+        **kwargs,
+    ) -> Any:
+        """运行 Agent 工具循环（对齐本体 Context.tool_loop_agent）。
+
+        SDK 降级：Go 宿主 Agent 编排链原生执行工具循环；此方法仅保证按
+        原版签名可 import / 调用，降级为一次 LLM 生成（不迭代工具循环），
+        返回 LLMResponse。
+        """
+        return await self.llm_generate(
+            chat_provider_id=chat_provider_id,
+            prompt=prompt,
+            image_urls=image_urls,
+            audio_urls=audio_urls,
+            tools=tools,
+            system_prompt=system_prompt,
+            contexts=contexts,
+            **kwargs,
+        )
+
     def get_llm_tool_manager(self):
         from astrbot.core.provider.func_tool_manager import llm_tools
 
@@ -681,10 +713,10 @@ class Context:
     def register_provider(self, provider) -> None:
         pass
 
-    def register_llm_tool(self, name: str, func_args: list, desc: str, handler) -> None:
+    def register_llm_tool(self, name: str, func_args: list, desc: str, func_obj) -> None:
         from astrbot.core.provider.func_tool_manager import llm_tools
 
-        llm_tools.add_func(name, func_args, desc, handler)
+        llm_tools.add_func(name, func_args, desc, func_obj)
 
     def add_llm_tools(self, *tools) -> None:
         """添加 LLM 工具（对齐 Python 原版 Context.add_llm_tools）。
@@ -723,19 +755,66 @@ class Context:
 
         llm_tools.remove_func(name)
 
-    def register_commands(self, command: dict) -> None:
-        pass
+    def register_commands(
+        self,
+        star_name: str,
+        command_name: str,
+        desc: str,
+        priority: int,
+        awaitable,
+        use_regex=False,
+        ignore_prefix=False,
+    ) -> None:
+        """[DEPRECATED]注册一个命令（对齐原版签名与语义）。
+
+        Args:
+            star_name: 插件（Star）名称。
+            command_name: 命令名称。
+            desc: 命令描述。
+            priority: 优先级。1-10。
+            awaitable: 异步处理函数。
+            use_regex: 是否使用正则表达式匹配命令。
+            ignore_prefix: 是否忽略命令前缀。
+
+        Note:
+            推荐使用装饰器注册指令（@filter.command）。本方法为旧式兼容。
+        """
+        from astrbot.core.star.star_handler import (
+            EventType,
+            StarHandlerMetadata,
+            star_handlers_registry,
+        )
+        from astrbot.core.star.filter.regex import RegexFilter
+        from astrbot.core.star.filter.command import CommandFilter
+
+        md = StarHandlerMetadata(
+            event_type=EventType.AdapterMessageEvent,
+            handler_full_name=awaitable.__module__ + "_" + awaitable.__name__,
+            handler_name=awaitable.__name__,
+            handler_module_path=awaitable.__module__,
+            handler=awaitable,
+            event_filters=[],
+            desc=desc,
+            extras_configs={"priority": priority, "ignore_prefix": bool(ignore_prefix)},
+        )
+        if use_regex:
+            md.event_filters.append(RegexFilter(regex=command_name))
+        else:
+            md.event_filters.append(
+                CommandFilter(command_name=command_name, handler_md=md),
+            )
+        star_handlers_registry.append(md)
 
     def register_web_api(
         self,
         route: str,
-        handler,
+        view_handler,
         methods: list | None = None,
         desc: str = "",
     ) -> None:
         """注册 Web API（宿主 /api/plug/<plugin>/<route> 网关转发到本插件）。
 
-        route 支持动态段："/emoji/<category>"。handler 为 async 函数，路径参数
+        route 支持动态段："/emoji/<category>"。view_handler 为 async 函数，路径参数
         按名解包调用；可用 astrbot.api.web.request 或 quart 全局 request。
         """
         route = route if route.startswith("/") else "/" + route
@@ -744,7 +823,7 @@ class Context:
         # 之后注册的路由无需重启即可被宿主网关 /api/plug/<plugin>/<route> 转发。
         for idx, (r, _, m, _) in enumerate(self._web_apis):
             if r == route and m == methods:
-                self._web_apis[idx] = (route, handler, methods, desc)
+                self._web_apis[idx] = (route, view_handler, methods, desc)
                 return
-        self._web_apis.append((route, handler, methods, desc))
+        self._web_apis.append((route, view_handler, methods, desc))
         logger.info(f"register_web_api: {methods} {route} — {desc}")

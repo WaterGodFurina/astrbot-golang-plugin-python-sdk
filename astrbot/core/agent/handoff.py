@@ -36,6 +36,9 @@ class HandoffTool(Generic[TContext]):
         self.description: str = description
         self.parameters: dict = parameters or self.default_parameters()
         self.agent: Any = agent
+        # 子代理可选的 chat provider 覆盖（对齐本体：非空时移交使用该
+        # provider 而非全局默认；Go 宿主编排链读取）。
+        self.provider_id: str | None = None
         self.handler: Any = None
         self.active: bool = True
         self.handler_module_path: str | None = None

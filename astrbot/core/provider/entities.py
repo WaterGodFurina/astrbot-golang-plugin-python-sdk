@@ -285,10 +285,13 @@ class ToolCall:
     tool_name: str = ""
     tool_args: dict[str, Any] = field(default_factory=dict)
     tool_id: str = ""
+    result: str = ""
+    is_error: bool = False
 
 
 @dataclass
 class PluginError:
+    plugin_name: str = ""
     handler_name: str = ""
     error: str = ""
 

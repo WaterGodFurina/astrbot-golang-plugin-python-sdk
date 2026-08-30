@@ -31,13 +31,14 @@ class GRPCStdioServicer(goplugin_pb2_grpc.GRPCStdioServicer):
 
     def StreamStdio(self, request, context):  # noqa: N802
         del request  # 宿主用 google.protobuf.Empty 请求，SDK 侧忽略
+        # unary_stream 响应必须是 generator：保活流周期性 yield 空数据块，
+        # 保持宿主 stdioClient.Recv() 活跃；连接断开时 GeneratorExit 退出。
         try:
-            # 保持流打开：周期性 yield 空块，宿主 stdioClient.Recv() 保持
-            # 活跃；连接断开时 GeneratorExit 自动退出。
-            while not context.is_active():
+            while True:
+                if not context.is_active():
+                    return
+                yield goplugin_pb2.StdioData()
                 time.sleep(1.0)
-            # 服务端主动结束：宿主 Run 线程收到 EOF 正常退出。
-            return
         except GeneratorExit:
             raise
         except Exception:

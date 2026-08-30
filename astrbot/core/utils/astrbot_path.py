@@ -50,6 +50,50 @@ def get_astrbot_webui_path() -> str:
     return os.path.join(get_astrbot_data_path(), "webui")
 
 
+def get_astrbot_builtin_plugin_path() -> str:
+    """返回 AstrBot 内置插件目录（Go 宿主无源码树，占位为数据目录）。"""
+    return os.path.realpath(os.path.join(get_astrbot_path(), "astrbot", "builtin_stars"))
+
+
+def get_astrbot_plugin_data_path() -> str:
+    return os.path.realpath(os.path.join(get_astrbot_data_path(), "plugin_data"))
+
+
+def get_astrbot_t2i_templates_path() -> str:
+    """返回 AstrBot T2I 模板目录。"""
+    return os.path.realpath(os.path.join(get_astrbot_data_path(), "t2i_templates"))
+
+
+def get_astrbot_webchat_path() -> str:
+    """返回 AstrBot WebChat 数据目录。"""
+    return os.path.realpath(os.path.join(get_astrbot_data_path(), "webchat"))
+
+
+def get_astrbot_skills_path() -> str:
+    """返回 AstrBot 技能目录。"""
+    return os.path.realpath(os.path.join(get_astrbot_data_path(), "skills"))
+
+
+def get_astrbot_workspaces_path() -> str:
+    """返回 AstrBot 工作区目录。"""
+    return os.path.realpath(os.path.join(get_astrbot_data_path(), "workspaces"))
+
+
+def get_astrbot_site_packages_path() -> str:
+    """返回 AstrBot 第三方 site-packages 目录。"""
+    return os.path.realpath(os.path.join(get_astrbot_data_path(), "site-packages"))
+
+
+def get_astrbot_knowledge_base_path() -> str:
+    """返回 AstrBot 知识库根目录。"""
+    return os.path.realpath(os.path.join(get_astrbot_data_path(), "knowledge_base"))
+
+
+def get_astrbot_backups_path() -> str:
+    """返回 AstrBot 备份目录。"""
+    return os.path.realpath(os.path.join(get_astrbot_data_path(), "backups"))
+
+
 def get_astrbot_system_tmp_path() -> str:
     """返回共享的系统临时目录（本地工具使用），对齐 Python 本体。
 

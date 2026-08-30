@@ -137,21 +137,90 @@ def _fit_hook_args(handler, event=None, payload=None):
     on_astrbot_loaded/on_platform_loaded 无参，on_plugin_loaded 传 metadata，
     on_llm_response 传 event+response 等）。多余参数不传，避免
     "takes N positional arguments but M were given"。"""
-    try:
-        sig = inspect.signature(handler)
-        n = sum(
-            1
-            for p in sig.parameters.values()
-            if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-        )
-    except (ValueError, TypeError):
-        n = 1
+    n = _count_positional(handler)
     args = []
     if n >= 1 and event is not None:
         args.append(event)
     if n >= 2 and payload is not None:
         args.append(payload)
     return args
+
+
+def _count_positional(handler) -> int:
+    """统计 handler 可接受的位置参数个数（对齐本体 call_event_hook 语义）。"""
+    try:
+        sig = inspect.signature(handler)
+        return sum(
+            1
+            for p in sig.parameters.values()
+            if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        )
+    except (ValueError, TypeError):
+        return 1
+
+
+def _hook_args_for_payload(handler, event, payload, event_name=None):
+    """按原版签名构造带 payload 钩子的位置参数列表。
+
+    原版（astrbot-py）各钩子是多位置参数，而非单 payload 对象：
+    - on_using_llm_tool(event, tool, tool_args)
+    - on_llm_tool_respond(event, tool, tool_args, tool_result)
+    - on_plugin_error(event, plugin_name, handler_name, error, traceback_text)
+    - on_plugin_loaded/on_plugin_unloaded(metadata)
+    - on_platform_loaded/on_astrbot_loaded() 无参
+    - on_waiting_llm_request/on_after_message_sent(event)
+    这里把跨进程 payload（ToolCall/PluginError/LLMResponse/metadata dict）展开
+    成对应位置参数，并按 handler 声明数截断（多余不传，缺省参数安全返回）。
+    """
+    n = _count_positional(handler)
+    if n <= 0:
+        return []
+
+    # lifecycle 钩子：无 event 概念，按原版语义传参
+    if event_name in ("on_plugin_loaded", "on_plugin_unloaded"):
+        # 原版 handler(metadata)：仅 metadata 一个位置参数（非 event）
+        return [payload][:n] if n >= 1 else []
+    if event_name in ("on_platform_loaded", "on_astrbot_loaded"):
+        # 原版 handler() 无参
+        return []
+
+    # 消息/管线钩子：第一个参数恒为 event
+    args = [event]
+    from astrbot.core.agent.tool import FunctionTool
+
+    if isinstance(payload, ToolCall):
+        tool = FunctionTool(name=payload.tool_name)
+        # on_using_llm_tool / on_llm_tool_respond：(event, tool, tool_args[, tool_result])
+        if n >= 2:
+            args.append(tool)
+        if n >= 3:
+            args.append(payload.tool_args)
+        if n >= 4:
+            from mcp import CallToolResult, TextContent
+
+            if payload.result:
+                args.append(CallToolResult(content=[TextContent(text=payload.result)], isError=payload.is_error))
+            else:
+                args.append(None)
+    elif isinstance(payload, PluginError):
+        # on_plugin_error(event, plugin_name, handler_name, error, traceback_text)
+        if n >= 2:
+            args.append(payload.plugin_name)
+        if n >= 3:
+            args.append(payload.handler_name)
+        if n >= 4:
+            args.append(payload.error)
+        if n >= 5:
+            args.append(payload.error)  # 宿主未传 traceback_text：以 error 兜底
+    elif isinstance(payload, LLMResponse):
+        # on_llm_response(event, response)
+        if n >= 2:
+            args.append(payload)
+    else:
+        # 未知 payload（含 None）：回退 event（+payload 若有）
+        if n >= 2 and payload is not None:
+            args.append(payload)
+    return args[:n]
 
 
 class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
@@ -650,26 +719,26 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                     logger.warning(f"HandleHook {request.name}: 组件转换失败，回退 Unknown: {e}")
                     comps.append(Unknown(text=""))
             result = MessageEventResult(comps)
+            # 对齐 astrbot-py 本体：结果钩子签名是 `handler(event)`（只收 event），
+            # 插件内部通过 event.get_result()/event.set_result() 读取/修改结果链
+            #（如 meme_manager 的 on_decorating_result(self, event) 原地改
+            # result.chain）。先把入站结果预置到 event，再只传 event 调用。
+            event.set_result(result)
             bound = _bind(handler, self.inst)
             try:
-                results = _call(bound, event, result)
+                results = _call(bound, event)
             except Exception as e:
                 logger.error(f"结果钩子 {request.name} 执行失败: {e}")
                 return resp
-            new_result = None
-            for r in results:
-                if r is not None:
-                    new_result = r
-            if new_result is not None:
-                if isinstance(new_result, MessageEventResult):
-                    comps = new_result.chain or []
-                elif isinstance(new_result, str):
-                    # 插件钩子返回字符串 = "用这段文本替换结果"：包装为 Plain
-                    from astrbot.core.message.components import Plain
-
-                    comps = [Plain(new_result)]
+            # 钩子后重新读取 event 结果：插件可能 set_result / 原地改 chain /
+            # clear_result（对齐原版 result_decorate 钩子后再 get_result 语义）。
+            new_result = event.get_result()
+            if new_result is None:
+                # 插件清空了结果 → 不回传 chain（对齐原版 cleared message result）
+                return resp
+            if new_result.chain:
                 from astrbot._bridge.serialize import component_list_to_proto
-                resp.chain.extend(component_list_to_proto(comps))
+                resp.chain.extend(component_list_to_proto(new_result.chain))
                 resp.stop = bool(
                     new_result.result_type == EventResultType.STOP
                 ) if isinstance(new_result, MessageEventResult) else False
@@ -678,7 +747,19 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
             return resp
 
         payload = None
-        if event_name == "on_llm_response":
+        if event_name in ("on_plugin_loaded", "on_plugin_unloaded"):
+            # 原版签名 handler(metadata)：metadata 是 StarMetadata（dict）。
+            # 宿主 payload_json = {"plugin_name": ...}（子进程跨进程无法给
+            # 完整 StarMetadata 对象，传插件名字典即可，对齐 plugin_name 访问）。
+            payload = "metadata"
+            if request.payload_json:
+                try:
+                    metadata = json.loads(request.payload_json)
+                    if isinstance(metadata, dict):
+                        payload = metadata
+                except json.JSONDecodeError as e:
+                    logger.error(f"HandleHook {request.name}: payload_json 解析失败: {e}")
+        elif event_name == "on_llm_response":
             pl = LLMResponse()
             if request.payload_json:
                 try:
@@ -694,6 +775,8 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
                     data = json.loads(request.payload_json)
                     payload.tool_name = data.get("tool_name", "")
                     payload.tool_args = data.get("tool_args") or {}
+                    payload.result = data.get("result", "")
+                    payload.is_error = bool(data.get("is_error", False))
                 except json.JSONDecodeError as e:
                     logger.error(f"HandleHook {request.name}: payload_json 解析失败: {e}")
         elif event_name == "on_plugin_error":
@@ -701,6 +784,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
             if request.payload_json:
                 try:
                     data = json.loads(request.payload_json)
+                    payload.plugin_name = data.get("plugin_name", "")
                     payload.handler_name = data.get("handler_name", "")
                     payload.error = data.get("error", "")
                 except json.JSONDecodeError as e:
@@ -708,7 +792,7 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
 
         bound = _bind(handler, self.inst)
         try:
-            results = _call(bound, *_fit_hook_args(bound, event, payload))
+            results = _call(bound, *_hook_args_for_payload(bound, event, payload, event_name))
         except Exception as e:
             logger.error(f"钩子 {request.name} ({event_name}) 执行失败: {e}")
             return resp

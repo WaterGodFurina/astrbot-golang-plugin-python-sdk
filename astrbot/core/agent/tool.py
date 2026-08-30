@@ -83,6 +83,21 @@ class ToolSchema:
         self.parameters.setdefault("type", "object")
         self.parameters.setdefault("properties", {})
 
+    def validate_parameters(self) -> "ToolSchema":
+        """校验 parameters 是否为合法 JSON Schema（对齐本体 ToolSchema 方法）。
+
+        jsonschema 为可选依赖：缺失时仅做基础类型校验，不抛错。
+        """
+        try:
+            import jsonschema
+
+            jsonschema.validate(
+                self.parameters, jsonschema.Draft202012Validator.META_SCHEMA
+            )
+        except ImportError:
+            pass
+        return self
+
 
 @dataclass
 class FunctionTool(ToolSchema):

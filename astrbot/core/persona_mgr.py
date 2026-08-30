@@ -147,3 +147,24 @@ class PersonaManager:
         force_applied = data.get("force_applied_persona_id") or None
         persona_prompt = data.get("persona_prompt") or ""
         return (persona_id, persona_name, force_applied, persona_prompt)
+
+    @property
+    def personas_v3(self) -> list[dict]:
+        """v3 人格 dict 列表（对齐本体 persona_v3 语义：含 prompt/name 键）。"""
+        return self.persona_configs
+
+    def get_persona_v3_by_id(self, persona_id: str | None) -> dict | None:
+        """按 ID 解析 v3 人格对象（对齐本体 get_persona_v3_by_id）。
+
+        - None / 空 id → None；
+        - "default" → 返回默认人格（{"name": "default"}）；
+        - 否则按 name 在 personas_v3 中查找。
+        """
+        if not persona_id:
+            return None
+        if persona_id == "default":
+            return {"name": "default", "prompt": "", "system_prompt": ""}
+        for persona in self.persona_configs:
+            if str(persona.get("name") or "") == persona_id:
+                return persona
+        return None

@@ -126,6 +126,18 @@ class ProviderManager:
         """人格配置 dict 列表（= personas 的原始形态）。"""
         return self.personas
 
+    @property
+    def selected_default_persona(self):
+        """默认选中的人格 dict（已弃用，建议用 context.persona_mgr 获取）。"""
+        try:
+            raw = self._bridge().get_default_persona("")
+        except Exception as e:
+            logger.warning(f"provider_manager.selected_default_persona 拉取失败: {e}")
+            return {"name": self.default_persona_name}
+        if isinstance(raw, dict) and raw:
+            return raw
+        return {"name": self.default_persona_name}
+
     # ── Provider 实例列表 ──────────────────────────────────────────────────
     def _list_providers(self, capability: str = "") -> list[Provider]:
         try:
@@ -332,3 +344,32 @@ class ProviderManager:
                     provider_type,
                     safe_error("", e),
                 )
+
+    # ── 管理方法（宿主 Provider 原生管理，SDK 薄壳对齐本体方法面）────────────
+    async def initialize(self) -> None:
+        """初始化全部 Provider（SDK 薄壳：宿主已初始化，no-op）。"""
+
+    async def load_provider(self, provider_config: dict) -> None:
+        """实例化一个 Provider（SDK 薄壳：宿主原生管理，no-op）。"""
+
+    async def reload(self, provider_config: dict) -> None:
+        """重载 Provider（SDK 薄壳：宿主原生管理，no-op）。"""
+
+    async def terminate_provider(self, provider_id: str) -> None:
+        """终止一个 Provider（SDK 薄壳：宿主原生管理，no-op）。"""
+
+    async def delete_provider(
+        self,
+        provider_id: str | None = None,
+        provider_source_id: str | None = None,
+    ) -> None:
+        """删除 Provider（SDK 薄壳：宿主原生管理，no-op）。"""
+
+    async def update_provider(self, origin_provider_id: str, new_config: dict) -> None:
+        """更新 Provider（SDK 薄壳：宿主原生管理，no-op）。"""
+
+    async def create_provider(self, new_config: dict) -> None:
+        """创建 Provider（SDK 薄壳：宿主原生管理，no-op）。"""
+
+    async def terminate(self) -> None:
+        """终止全部 Provider（SDK 薄壳：宿主原生管理，no-op）。"""

@@ -14,17 +14,6 @@ from astrbot.core.agent.tool import FunctionTool
 
 logger = logging.getLogger("astrbot")
 
-_KB_SEARCH_SCHEMA: dict = {
-    "type": "object",
-    "properties": {
-        "query": {
-            "type": "string",
-            "description": "The query to search in the knowledge base.",
-        }
-    },
-    "required": ["query"],
-}
-
 
 @dataclass
 class KnowledgeBaseQueryTool(FunctionTool):
@@ -32,10 +21,23 @@ class KnowledgeBaseQueryTool(FunctionTool):
 
     name: str = "astr_kb_search"
     description: str = (
-        "Search the user's knowledge base for relevant context, especially "
-        "for factual or personalized queries."
+        "Query the knowledge base for facts or relevant context. "
+        "Use this tool when the user's question requires factual information, "
+        "definitions, background knowledge, or previously indexed content. "
+        "Only send short keywords or a concise question as the query."
     )
-    parameters: dict = field(default_factory=lambda: _KB_SEARCH_SCHEMA)
+    parameters: dict = field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "A concise keyword query for the knowledge base.",
+                },
+            },
+            "required": ["query"],
+        }
+    )
 
 
 def check_all_kb(kb_list: list[Any] | None) -> bool:

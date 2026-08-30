@@ -64,6 +64,13 @@ class FaissVecDB(BaseVecDB):
     async def delete(self, doc_id: str) -> bool:
         return True
 
+    async def count_documents(self, metadata_filter: dict | None = None) -> int:
+        """计算文档数量（SDK 降级：返回 0，宿主 nanovec 原生统计）。"""
+        return 0
+
+    async def delete_documents(self, metadata_filters: dict) -> None:
+        """按元数据过滤器删除文档（SDK 降级：no-op，宿主原生执行）。"""
+
     async def close(self) -> None:
         """关闭向量库（SDK 降级：no-op）。"""
 

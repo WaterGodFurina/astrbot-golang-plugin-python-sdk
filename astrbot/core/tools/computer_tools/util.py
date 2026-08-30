@@ -35,15 +35,27 @@ def is_local_runtime(context: ContextWrapper) -> bool:
     return False
 
 
-def check_admin_permission(context: ContextWrapper, user_id: str) -> bool:
-    """检查管理员权限（SDK 薄壳：转发宿主 event.is_admin，缺省 False）。"""
+def check_admin_permission(context: ContextWrapper, operation_name: str) -> str | None:
+    """检查管理员权限（对齐本体：非 None 返回错误消息 -> 拒绝操作）。
+
+    SDK 薄壳：转发宿主 event 的管理员状态；无事件/非管理员时返回本体的
+    标准拒绝消息，否则返回 None（允许）。
+    """
     ctx = getattr(context, "context", None)
-    if ctx is None:
-        return False
-    event = getattr(ctx, "event", None)
-    if event is None:
-        return False
-    return bool(getattr(event, "is_admin", False))
+    is_admin = False
+    sender_id = ""
+    if ctx is not None:
+        event = getattr(ctx, "event", None)
+        if event is not None:
+            is_admin = bool(getattr(event, "is_admin", False))
+            sender_id = str(getattr(event, "get_sender_id", lambda: "")() or "")
+    if is_admin:
+        return None
+    return (
+        f"error: Permission denied. {operation_name} is only allowed for admin users. "
+        "Tell user to set admins in `AstrBot WebUI -> Config -> General Config` by adding their user ID to the admins list if they need this feature. "
+        f"User's ID is: {sender_id}. User's ID can be found by using /sid command."
+    )
 
 
 def normalize_umo_for_workspace(umo: str) -> str:
