@@ -355,6 +355,70 @@ class EmbeddingProvider(Provider):
         """批量获取文本的向量（降级：宿主无 Embedding RPC，返回 []）。"""
         return []
 
+    async def get_embeddings_batch(
+        self,
+        texts: list[str],
+        batch_size: int = 16,
+        tasks_limit: int = 3,
+        max_retries: int = 3,
+        progress_callback=None,
+    ) -> list[list[float]]:
+        """批量获取文本的向量，分批处理以节省内存（对齐原版语义）。
+
+        原版 astrbot-py 的 EmbeddingProvider 基类提供该方法（分片 + 信号量
+        并发 + 指数退避重试 + 进度回调），FaissVecDB.add_documents 经
+        ``self.embedding_provider.get_embeddings_batch(...)`` 调用；SDK 基类
+        缺失该方法时，livingmemory 反思入库（graph_vector_retriever →
+        faiss insert_batch）直接 AttributeError。默认实现按原版语义包装
+        ``self.get_embeddings``，子类已实现批量端点的可直接复用。
+
+        Args:
+            texts: 文本列表
+            batch_size: 每批处理的文本数量
+            tasks_limit: 并发任务数量限制
+            max_retries: 失败时的最大重试次数
+            progress_callback: 进度回调函数，接收参数 (current, total)
+
+        Returns:
+            向量列表
+        """
+        semaphore = asyncio.Semaphore(tasks_limit)
+        batch_results: dict[int, list[list[float]]] = {}
+        completed_count = 0
+        total_count = len(texts)
+
+        async def process_batch(batch_idx: int, batch_texts: list[str]) -> None:
+            nonlocal completed_count
+            async with semaphore:
+                for attempt in range(max_retries):
+                    try:
+                        batch_embeddings = await self.get_embeddings(batch_texts)
+                        batch_results[batch_idx] = batch_embeddings
+                        completed_count += len(batch_texts)
+                        if progress_callback:
+                            res = progress_callback(completed_count, total_count)
+                            if asyncio.iscoroutine(res):
+                                await res
+                        return
+                    except Exception:
+                        if attempt == max_retries - 1:
+                            raise
+                        # 指数退避后重试（对齐原版）
+                        await asyncio.sleep(2**attempt)
+
+        tasks = []
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i : i + batch_size]
+            batch_idx = i // batch_size
+            tasks.append(process_batch(batch_idx, batch_texts))
+
+        await asyncio.gather(*tasks)
+
+        all_embeddings: list[list[float]] = []
+        for batch_idx in range(len(tasks)):
+            all_embeddings.extend(batch_results[batch_idx])
+        return all_embeddings
+
     def get_dim(self) -> int:
         """获取向量的维度（降级：宿主无 Embedding RPC，返回 0）。"""
         return 0
