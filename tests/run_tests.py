@@ -922,6 +922,87 @@ class TestP1Benchmark:
                   f"json_ref={dt_json*1e6:.1f}us")
 
 
+class TestToolFirstArg(unittest.TestCase):
+    """HandleTool 工具首参判定（原版 call 型 ContextWrapper vs run 型 event）。"""
+
+    def _dispatch_mod(self):
+        from astrbot._bridge import dispatch
+
+        return dispatch
+
+    def test_call_style_first_arg_context(self):
+        """livingmemory 风格 call(self, context, **kw)：首参应判定为 context 语境。"""
+        d = self._dispatch_mod()
+
+        class Tool:
+            async def call(self, context, query, k=5):
+                return context.context.event
+
+        t = Tool()
+        self.assertTrue(d._tool_first_arg_is_context(t.call))
+
+    def test_run_style_first_arg_event(self):
+        """SDK 文档约定 run(self, event, **kw)：应保持传事件本身。"""
+        d = self._dispatch_mod()
+
+        class Tool:
+            async def run(self, event, query):
+                return "ok"
+
+        t = Tool()
+        self.assertFalse(d._tool_first_arg_is_context(t.run))
+
+    def test_annotated_event(self):
+        """注解 AstrMessageEvent 的首参 → 恒为 run 型。"""
+        d = self._dispatch_mod()
+        try:
+            from astrbot.core.platform.astr_message_event import AstrMessageEvent as AME
+        except ImportError:
+            self.skipTest("AstrMessageEvent 导入路径不可用")
+        code = "def h(event: AstrMessageEvent, query: str):\n    return None\n"
+        globs = {"AstrMessageEvent": AME}
+        exec(compile(code, "<test>", "exec"), globs)
+        self.assertFalse(d._tool_first_arg_is_context(globs["h"]))
+
+    def test_annotated_context_wrapper(self):
+        """注解 ContextWrapper 的首参 → call 型。"""
+        d = self._dispatch_mod()
+        from astrbot.core.agent.run_context import ContextWrapper
+
+        def h(context: ContextWrapper, query: str):
+            return None
+
+        self.assertTrue(d._tool_first_arg_is_context(h))
+
+    def test_unresolvable_signature_keeps_old_behavior(self):
+        """签名不可解析（*args）→ False，保持旧行为（传事件）。"""
+        d = self._dispatch_mod()
+
+        def h(*args, **kwargs):
+            return None
+
+        self.assertFalse(d._tool_first_arg_is_context(h))
+
+    def test_wrapper_access_chain(self):
+        """包装后的访问链：wrapper.context.event 即事件（livingmemory 炸点）。"""
+        d = self._dispatch_mod()
+        from astrbot.core.agent.run_context import ContextWrapper
+
+        sentinel = types.SimpleNamespace(message_str="hi")
+        wrapper = ContextWrapper(context=d._ToolTContext(sentinel), messages=[])
+        self.assertIs(wrapper.context.event, sentinel)
+
+        # 端到端：livingmemory 风格 call 在包装首参下取到事件
+        class Tool:
+            async def call(self, context, query, k=5):
+                return context.context.event
+
+        import asyncio
+
+        got = asyncio.run(Tool().call(wrapper, query="q"))
+        self.assertIs(got, sentinel)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2, exit=False)
     TestP1Benchmark.run()
