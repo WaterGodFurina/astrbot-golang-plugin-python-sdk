@@ -44,12 +44,6 @@ class PlatformManager(_PlatformManagerStub):
         """获取平台实例列表（从宿主 ListPlatforms 惰性拉取）。"""
         return super().get_insts()
 
-    @property
-    def platform_insts(self) -> list:
-        """平台实例列表属性（对齐本体 PlatformManager.platform_insts，
-        本体 manager.py:24；SDK 以宿主实时清单呈现，只读）。"""
-        return self.get_insts()
-
     def get_all_stats(self) -> dict:
         """全部平台统计（SDK 薄壳：宿主经 CallAction 提供，此处返回空）。"""
         return {}

@@ -35,8 +35,9 @@ from astrbot.core.db.po import (
 )
 
 # 模块级单例 sentinel（对齐原版 astrbot.core.sentinels.NOT_GIVEN：
-# 用于区分“未传参”与“显式传 None”）。
-NOT_GIVEN = object()
+# 用于区分“未传参”与“显式传 None”）。与 astrbot.core.sentinels 保持
+# 同一对象（红线：同名符号同义，插件两侧 import 拿到同一哨兵）。
+from astrbot.core.sentinels import NOT_GIVEN  # noqa: E402  re-export
 
 
 class _AsyncSessionContext:

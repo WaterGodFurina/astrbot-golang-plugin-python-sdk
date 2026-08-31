@@ -108,6 +108,28 @@ def _download_to_temp(url: str, suffix: str = "") -> str:
     return _impl(url, suffix)
 
 
+def _sniff_image_format(data: bytes) -> str:
+    """按文件头 magic 字节嗅探图片格式（PIL 不可用时的降级探测）。
+
+    返回 IMAGE_FORMAT_MIME_TYPES 的键（大写格式名），未识别返回 ""。
+    """
+    if not isinstance(data, bytes) or len(data) < 12:
+        return ""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "PNG"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "GIF"
+    if data.startswith(b"BM"):
+        return "BMP"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "JPEG"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "WEBP"
+    if data.startswith(b"\x00\x00\x01\x00"):
+        return "ICO"
+    return ""
+
+
 def detect_image_mime_type(
     image_source,
     *,
@@ -142,7 +164,10 @@ def detect_image_mime_type(
             image.verify()
             fmt = str(image.format or "").upper()
     except Exception:
-        fmt = ""
+        # PIL 缺失或打开失败：按文件头 magic 兜底探测（覆盖常见格式），
+        # 探测不出时回落 default_mime_type（本体无 PIL 环境不存在，
+        # SDK 宿主依赖未必含 Pillow，此处为增强降级）。
+        fmt = _sniff_image_format(data)
     return IMAGE_FORMAT_MIME_TYPES.get(fmt, default_mime_type)
 
 
@@ -1046,16 +1071,17 @@ async def ensure_jpeg(image_path: str, output_path: str | None = None) -> str:
     """确保图片为 JPEG 兼容的静态图（对齐本体 ensure_jpeg，纯 PIL 实现）。
 
     已是 .jpg/.jpeg 后缀的 JPEG、带透明通道或动图原样返回；其余静态图
-    转 JPEG（Pillow 打开失败原样抛出）。
+    转 JPEG（Pillow 打开失败原样抛出）。空路径/文件不存在在对齐本体的
+    顺序下原样返回（先判定、再导入 PIL）。
     """
-    from PIL import Image as PILImage
-
     if not image_path:
         return image_path
 
     source_path = Path(image_path)
     if not source_path.exists():
         return image_path
+
+    from PIL import Image as PILImage
 
     with PILImage.open(source_path) as opened_img:
         image_format = str(opened_img.format or "").upper()

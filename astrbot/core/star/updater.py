@@ -26,6 +26,40 @@ PLUGIN_METADATA_MAX_BYTES = 1024 * 1024
 PLUGIN_REPOSITORY_TIMEOUT_SECONDS = 15
 PLUGIN_GIT_CLONE_TIMEOUT_SECONDS = 180
 
+
+def _load_yaml_metadata(text: str) -> dict:
+    """解析插件元数据 YAML（优先 PyYAML，未安装时降级为简易解析）。
+
+    本体经 yaml.safe_load 解析（PyYAML 为本体必装依赖）；SDK 运行环境
+    可能未声明 PyYAML，此时用逐行 ``key: value`` 简易解析兜底（插件
+    metadata.yaml 为扁平键值，够用）；值支持单/双引号与行内注释剥离。
+    """
+    try:
+        import yaml
+    except ModuleNotFoundError:
+        metadata: dict = {}
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or ":" not in line:
+                continue
+            key, _, value = line.partition(":")
+            key = key.strip()
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            elif " #" in value:
+                value = value.split(" #", 1)[0].strip()
+            if key:
+                metadata[key] = value
+        return metadata
+    else:
+        try:
+            loaded = yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            raise ValueError("metadata 格式错误。") from exc
+        return loaded if isinstance(loaded, dict) else {}
+
+
 __all__ = ["PLUGIN_METADATA_FILENAMES"]
 
 
@@ -171,8 +205,6 @@ class _PluginUpdater:
         Raises:
             ValueError: 目录不是合法的 AstrBot 插件。
         """
-        import yaml  # 惰性导入：SDK 运行环境可能未声明 PyYAML 依赖
-
         root = Path(plugin_path)
         for filename in PLUGIN_METADATA_FILENAMES:
             metadata_path = root / filename
@@ -181,11 +213,10 @@ class _PluginUpdater:
             if metadata_path.stat().st_size > PLUGIN_METADATA_MAX_BYTES:
                 raise ValueError(f"{filename} 超过 1MB。")
             try:
-                metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
+                metadata_text = metadata_path.read_text(encoding="utf-8")
             except UnicodeDecodeError as exc:
                 raise ValueError(f"{filename} 必须使用 UTF-8 编码。") from exc
-            except yaml.YAMLError as exc:
-                raise ValueError(f"{filename} 格式错误。") from exc
+            metadata = _load_yaml_metadata(metadata_text)
             cls.validate_plugin_metadata(metadata, filename)
             return {"metadata_entry": filename, "metadata": metadata}
         raise ValueError("未在仓库根目录找到 metadata.yaml 或 metadata.yml。")
@@ -203,8 +234,6 @@ class _PluginUpdater:
         Raises:
             ValueError: 压缩包不是合法的 AstrBot 插件。
         """
-        import yaml  # 惰性导入：SDK 运行环境可能未声明 PyYAML 依赖
-
         try:
             with zipfile.ZipFile(zip_path, "r") as z:
                 metadata_entry = cls.find_plugin_metadata_entry(z.namelist())
@@ -215,11 +244,9 @@ class _PluginUpdater:
 
                 try:
                     metadata_text = z.read(metadata_entry).decode("utf-8")
-                    metadata = yaml.safe_load(metadata_text)
+                    metadata = _load_yaml_metadata(metadata_text)
                 except UnicodeDecodeError as exc:
                     raise ValueError(f"{metadata_entry} 必须使用 UTF-8 编码。") from exc
-                except yaml.YAMLError as exc:
-                    raise ValueError(f"{metadata_entry} 格式错误。") from exc
 
                 cls.validate_plugin_metadata(metadata, metadata_entry)
                 return {

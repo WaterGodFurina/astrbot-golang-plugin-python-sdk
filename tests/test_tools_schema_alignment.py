@@ -98,9 +98,13 @@ class TestWebSearchToolsSchema(unittest.TestCase):
             ],
         )
 
-    def _assert_query_required(self, tool_cls, props):
-        self.assertEqual(_required(tool_cls()), ("query",))
+    def _assert_query_required(self, tool_cls, props, required=("query",)):
+        self.assertEqual(_required(tool_cls()), required)
         self.assertEqual(_props(tool_cls()), props)
+
+    def _assert_url_required(self, tool_cls, props):
+        """extract 类工具本体 required 为 ["url"]（本体 web_search_tools.py:692）。"""
+        self._assert_query_required(tool_cls, props, required=("url",))
 
     def test_tavily(self):
         t = wst.TavilyWebSearchTool
@@ -114,7 +118,7 @@ class TestWebSearchToolsSchema(unittest.TestCase):
     def test_tavily_extract(self):
         t = wst.TavilyExtractWebPageTool
         self.assertEqual(t.name, "tavily_extract_web_page")
-        self._assert_query_required(t, {"url", "extract_depth"})
+        self._assert_url_required(t, {"url", "extract_depth"})
 
     def test_bocha(self):
         t = wst.BochaWebSearchTool
@@ -140,7 +144,7 @@ class TestWebSearchToolsSchema(unittest.TestCase):
     def test_firecrawl_extract(self):
         t = wst.FirecrawlExtractWebPageTool
         self.assertEqual(t.name, "firecrawl_extract_web_page")
-        self._assert_query_required(
+        self._assert_url_required(
             t, {"url", "format", "only_main_content", "timeout", "max_age"}
         )
 
@@ -163,7 +167,7 @@ class TestWebSearchToolsSchema(unittest.TestCase):
     def test_exa_get_contents(self):
         t = wst.ExaGetContentsTool
         self.assertEqual(t.name, "exa_get_contents")
-        self._assert_query_required(t, {"url", "max_characters"})
+        self._assert_url_required(t, {"url", "max_characters"})
 
     def test_search_result_dataclass(self):
         result = wst.SearchResult(title="t", url="u", snippet="s")

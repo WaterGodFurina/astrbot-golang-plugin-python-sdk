@@ -289,11 +289,15 @@ def build_skills_prompt(skills: list[SkillInfo]) -> str:
     for skill in skills:
         display_name = _sanitize_skill_display_name(skill.name)
 
-        description = skill.description or "No description"
+        # 对齐本体顺序：sandbox_only/workspace 先净化原始 description，
+        # 净化后为空才落到 "Read SKILL.md for details."；其余类型在
+        # description 为空时使用 "No description" 兜底。
         if skill.source_type in {"sandbox_only", "workspace"}:
-            description = _sanitize_prompt_description(description)
+            description = _sanitize_prompt_description(skill.description or "")
             if not description:
                 description = "Read SKILL.md for details."
+        else:
+            description = skill.description or "No description"
 
         if skill.source_type == "sandbox_only":
             # Prefer the actual path from sandbox cache if available

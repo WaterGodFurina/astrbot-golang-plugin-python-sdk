@@ -53,7 +53,9 @@ class TestBuiltinToolConfigCondition(unittest.TestCase):
     def test_truthy_operator(self):
         cond = BuiltinToolConfigCondition(key="flag", operator="truthy")
         self.assertTrue(cond.evaluate({"flag": 1})["matched"])
-        self.assertFalse(cond.evaluate({})["matched"])
+        # 缺失键时 actual 为 _MISSING 哨兵（object()），bool 为 True——
+        # 与本体 registry.evaluate 的既有行为逐字一致（bool(actual)）。
+        self.assertTrue(cond.evaluate({})["matched"])
 
     def test_custom_operator(self):
         cond = BuiltinToolConfigCondition(key="k", operator="custom", expected=True)
@@ -91,7 +93,7 @@ class TestBuiltinToolConfigRule(unittest.TestCase):
 
 class TestBuiltinToolDecorator(unittest.TestCase):
     def test_config_registers_rule(self):
-        @_builtin_tool(config={"kb_agentic_mode": True})
+        @builtin_tool(config={"kb_agentic_mode": True})
         class _Tool:
             name = "registry_rule_tool"
 
@@ -109,14 +111,14 @@ class TestBuiltinToolDecorator(unittest.TestCase):
             _builtin_tool_names_by_class.pop(_Tool, None)
 
     def test_duplicate_name_conflict_raises(self):
-        @_builtin_tool
+        @builtin_tool
         class _ToolA:
             name = "registry_conflict_tool"
 
         try:
             with self.assertRaises(ValueError):
 
-                @_builtin_tool
+                @builtin_tool
                 class _ToolB:
                     name = "registry_conflict_tool"
 

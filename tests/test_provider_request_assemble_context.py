@@ -16,11 +16,12 @@ class TestAssembleContext(unittest.TestCase):
         out = asyncio.run(req.assemble_context())
         self.assertEqual(out, {"role": "user", "content": "hi"})
 
-    def test_blank_prompt_degrades_to_empty_content(self):
-        """空 prompt → content 为空串的简单格式（无多模态块）。"""
+    def test_blank_prompt_keeps_empty_block_list(self):
+        """空 prompt 无媒体 → content_blocks 为空列表，不满足单文本块降级
+        条件（len==1），与本体一致返回 content=[]。"""
         req = ProviderRequest(prompt="")
         out = asyncio.run(req.assemble_context())
-        self.assertEqual(out, {"role": "user", "content": ""})
+        self.assertEqual(out, {"role": "user", "content": []})
 
     def test_extra_parts_make_multimodal_format(self):
         """带 extra_user_content_parts → 返回 content 列表（多模态格式）。"""

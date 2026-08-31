@@ -292,9 +292,21 @@ class _PlatformManagerStub:
     """
 
     def __init__(self) -> None:
-        self.platform_insts: list[Any] = []
+        self._platform_insts: list[Any] = []
         self.platform_insts_map: dict[str, Any] = {}
         self._refreshed = False
+
+    @property
+    def platform_insts(self) -> list:
+        """平台实例列表属性（对齐本体 PlatformManager.platform_insts）。
+
+        读取时经 get_insts() 惰性拉取宿主清单；写入仅更新本地缓存。
+        """
+        return self.get_insts()
+
+    @platform_insts.setter
+    def platform_insts(self, value: list) -> None:
+        self._platform_insts = list(value or [])
 
     def _refresh(self) -> None:
         if self._refreshed:
@@ -323,19 +335,19 @@ class _PlatformManagerStub:
             insts.append(stub)
             if stub._meta.id:
                 self.platform_insts_map[stub._meta.id] = stub
-        self.platform_insts = insts
+        self._platform_insts = insts
 
     def get_insts(self) -> list:
         """获取平台实例列表（从宿主惰性拉取，非消息路径）。"""
         self._refresh()
-        return self.platform_insts
+        return self._platform_insts
 
     def get_platform(self, platform_id: str) -> Any | None:
         """按平台 ID 获取实例（null 时取第一个）。"""
         self._refresh()
         if platform_id:
             return self.platform_insts_map.get(platform_id)
-        return self.platform_insts[0] if self.platform_insts else None
+        return self._platform_insts[0] if self._platform_insts else None
 
 
 class Context:
