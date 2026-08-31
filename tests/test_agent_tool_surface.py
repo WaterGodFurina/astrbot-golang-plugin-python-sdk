@@ -17,6 +17,7 @@ import asyncio
 import os
 import sys
 import types
+import typing
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -250,7 +251,10 @@ class TestAgentCoreModulesSurface(unittest.TestCase):
         )
         ctx = AstrAgentContext()
         self.assertEqual(ctx.extra, {})
-        self.assertTrue(issubclass(AgentContextWrapper, ContextWrapper))
+        # AgentContextWrapper 是泛型别名 ContextWrapper[AstrAgentContext]
+        #（对齐本体 astr_agent_context.py:21），issubclass 对 _GenericAlias
+        # 会 TypeError，用 get_origin 比较来源类。
+        self.assertIs(typing.get_origin(AgentContextWrapper), ContextWrapper)
 
 
 if __name__ == "__main__":

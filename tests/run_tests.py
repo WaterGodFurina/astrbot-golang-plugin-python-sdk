@@ -364,7 +364,10 @@ class TestPlatformBotProxy(unittest.TestCase):
                 "call_action_async": fake_call_action_async,
             },
         )()
+        old_get_bridge = ctx_mod.get_host_bridge
         ctx_mod.get_host_bridge = lambda: bridge
+        # 必须恢复模块级函数，否则后续测试的 set_host_bridge 单例失效
+        self.addCleanup(lambda: setattr(ctx_mod, "get_host_bridge", old_get_bridge))
         self.proxy = _PlatformBotProxy("aiocqhttp_main")
 
     def test_dynamic_action_forwarding(self):

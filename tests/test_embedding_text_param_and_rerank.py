@@ -109,7 +109,8 @@ class TestProviderTextChatSignature(unittest.TestCase):
                 extra_user_content_parts=[],
             )
         )
-        self.assertEqual(resp.completion_text, "ctx\nhi")
+        # bridge 返回值即 completion_text（fake 在合并 prompt "ctx\nhi" 前加 ok: 前缀）
+        self.assertEqual(resp.completion_text, "ok:ctx\nhi")
 
 
 if __name__ == "__main__":

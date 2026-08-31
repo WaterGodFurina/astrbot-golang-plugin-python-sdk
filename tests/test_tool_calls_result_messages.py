@@ -18,11 +18,19 @@ class TestToolCallsResultMessages(unittest.TestCase):
         self.assertEqual(out, [info, r1])
 
     def test_openai_messages_from_flat_fields(self):
-        """扁平字段（tool_call_name/args/id）→ OpenAI 消息 dict（SDK 兼容路径）。"""
+        """扁平字段（tool_call_name/args/id）→ OpenAI 消息 dict（SDK 兼容路径）。
+
+        1 条 assistant（tool_calls 合并 name/args/id）+ 每个调用结果一条
+        tool 消息（tool_calls_result 需与调用一一对应）。
+        """
         tr = ToolCallsResult(
             tool_call_name=["t1", "t2"],
             tool_call_args=[{"a": 1}, {"b": 2}],
             tool_call_id=["id1", "id2"],
+            tool_calls_result=[
+                {"role": "tool", "content": "r1"},
+                {"role": "tool", "content": "r2"},
+            ],
         )
         out = tr.to_openai_messages()
         self.assertEqual(len(out), 3)
