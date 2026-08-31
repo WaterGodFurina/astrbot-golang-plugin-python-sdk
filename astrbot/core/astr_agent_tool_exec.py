@@ -8,10 +8,16 @@ run()），此处保留同名子类以保证 import 路径一致。
 from __future__ import annotations
 
 from astrbot.api import BaseFunctionToolExecutor
+from astrbot.core.astr_agent_context import AstrAgentContext
 
 
-class FunctionToolExecutor(BaseFunctionToolExecutor):
-    """Agent 工具执行器（SDK 默认实现，宿主工具执行在 Agent 链内）。"""
+class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
+    """Agent 工具执行器（SDK 默认实现，宿主工具执行在 Agent 链内）。
+
+    泛型参数对齐本体 `BaseFunctionToolExecutor[AstrAgentContext]`；execute
+    的 call 型 / run 型首参约定见
+    `astrbot.core.agent.tool_executor.BaseFunctionToolExecutor.execute`。
+    """
 
 
 __all__ = ["FunctionToolExecutor"]

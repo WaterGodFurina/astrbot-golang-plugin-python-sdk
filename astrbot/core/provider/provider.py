@@ -16,7 +16,7 @@ import abc
 import asyncio
 import logging
 import os
-from typing import Any
+from typing import Any, TypeAlias, Union
 
 from astrbot.core.agent.message import ContentPart, Message, is_checkpoint_message
 from astrbot.core.provider.entities import (
@@ -181,34 +181,46 @@ class Provider(AbstractProvider):
     async def text_chat(
         self,
         prompt: str | None = None,
-        system_prompt: str = "",
+        session_id: str | None = None,
         image_urls: list[str] | None = None,
-        session_id: str = "",
+        audio_urls: list[str] | None = None,
         func_tool: Any | None = None,
-        tool_choice: Any | None = None,
-        request_max_retries: int | None = 3,
+        contexts: list | None = None,
+        system_prompt: str | None = None,
+        tool_calls_result: Any | None = None,
+        model: str | None = None,
+        extra_user_content_parts: list | None = None,
+        tool_choice: Any | None = "auto",
+        request_max_retries: int | None = None,
         **kwargs: Any,
     ) -> Any:
-        """非流式 LLM 调用（降级实现）。
+        """非流式 LLM 调用（降级实现，签名对齐本体 text_chat）。
 
         Go 宿主桥无非流式专用 RPC：复用 chat_llm_async 拿完整文本后，
         包装为 `LLMResponse(role="assistant") + result_chain=[Plain(text)]`
         （对齐本体 text_chat 的返回对象）。
 
         Args:
-            prompt: 提示词
-            system_prompt: 系统提示词
+            prompt: 提示词，和 contexts 二选一使用
+            session_id: 会话 ID（宿主桥透传，语义由宿主决定；本体已废弃此参数）
             image_urls: 图片 URL 列表
-            session_id: 会话 ID（宿主桥透传，语义由宿主决定）
+            audio_urls: 音频 URL 列表（宿主桥 chat_llm_async 已透传，
+                不支持时由宿主侧忽略）
             func_tool: 函数工具集合（宿主桥无对应通道，忽略）
+            contexts: 上下文，和 prompt 二选一使用（存在时取末条文本拼到
+                prompt 前，参考 Context.llm_generate 的现有做法）
+            system_prompt: 系统提示词
+            tool_calls_result: 回传给 LLM 的工具调用结果（宿主桥无对应
+                通道，忽略）
+            model: 模型名（宿主桥无对应通道，忽略；使用宿主当前配置模型）
+            extra_user_content_parts: 额外内容块列表（宿主桥无对应通道，忽略）
             tool_choice: 工具调用策略（宿主桥无对应通道，忽略）
             request_max_retries: 最大重试次数（宿主桥无对应通道，忽略）
-            **kwargs: 其他参数（含 contexts：存在时取末条文本拼到 prompt 前，
-                参考 Context.llm_generate 的现有做法）
+            **kwargs: 其他参数
         """
         prompt = prompt or ""
         # contexts 传入时宿主无对应通道，取最后一条文本拼到 prompt 前
-        contexts = kwargs.get("contexts") or []
+        contexts = contexts or kwargs.get("contexts") or []
         if contexts and isinstance(contexts[-1], dict) and contexts[-1].get("content"):
             prompt = str(contexts[-1]["content"]) + "\n" + prompt
         bridge = self._bridge()
@@ -225,17 +237,19 @@ class Provider(AbstractProvider):
     async def text_chat_stream(
         self,
         prompt: str | None = None,
-        system_prompt: str = "",
+        session_id: str | None = None,
         image_urls: list[str] | None = None,
         audio_urls: list[str] | None = None,
-        session_id: str = "",
         func_tool: Any | None = None,
-        tool_choice: Any | None = None,
         contexts: list | None = None,
+        system_prompt: str | None = None,
+        tool_calls_result: Any | None = None,
+        model: str | None = None,
+        tool_choice: Any | None = "auto",
         request_max_retries: int | None = None,
         **kwargs: Any,
     ) -> Any:
-        """流式 LLM 调用（降级实现）。
+        """流式 LLM 调用（降级实现，签名对齐本体 text_chat_stream）。
 
         Go 宿主桥无流式 RPC：经 chat_llm_async 拿完整文本后，yield 一个
         LLMResponse（对齐本体流式响应对象字段，最后一条为完整结果）。
@@ -243,13 +257,15 @@ class Provider(AbstractProvider):
 
         Args:
             prompt: 提示词，和 contexts 二选一使用
-            system_prompt: 系统提示词
+            session_id: 会话 ID（宿主桥透传，语义由宿主决定）
             image_urls: 图片 URL 列表
             audio_urls: 音频 URL 列表（宿主桥无对应通道，忽略）
-            session_id: 会话 ID
             func_tool: 函数工具集合（宿主桥无对应通道，忽略）
+            contexts: 上下文，和 prompt 二选一使用（存在时取末条文本兜底为 prompt）
+            system_prompt: 系统提示词
+            tool_calls_result: 回传给 LLM 的工具调用结果（宿主桥无对应通道，忽略）
+            model: 模型名（宿主桥无对应通道，忽略）
             tool_choice: 工具调用策略（宿主桥无对应通道，忽略）
-            contexts: 上下文，和 prompt 二选一使用
             request_max_retries: 最大重试次数（宿主桥无对应通道，忽略）
             **kwargs: 其他参数
         """
@@ -269,6 +285,21 @@ class Provider(AbstractProvider):
             session_id or "",
         )
         yield self._build_llm_response(text)
+
+    async def pop_record(self, context: list) -> None:
+        """弹出 context 第一条非系统提示词对话记录（对齐本体语义）。"""
+        poped = 0
+        indexs_to_pop = []
+        for idx, record in enumerate(context):
+            if record["role"] == "system":
+                continue
+            indexs_to_pop.append(idx)
+            poped += 1
+            if poped == 2:
+                break
+
+        for idx in reversed(indexs_to_pop):
+            context.pop(idx)
 
     async def test(self, timeout: float = 45.0) -> bool:
         """可达性测试（降级实现）。
@@ -323,6 +354,49 @@ class TTSProvider(Provider):
         """获取文本的音频，返回音频文件路径（降级：宿主无 TTS RPC，返回 ""）。"""
         return ""
 
+    async def get_audio_stream(
+        self,
+        text_queue: asyncio.Queue,
+        audio_queue: asyncio.Queue,
+    ) -> None:
+        """流式 TTS 处理方法（对齐本体默认实现）。
+
+        从 text_queue 中读取文本片段并累积；收到 None（输入结束）时把
+        累积文本一次性交给 get_audio 生成音频文件，读取文件内容后以
+        `(text, bytes)` 形式放入 audio_queue，最后放入 None 表示输出结束。
+        生成失败时跳过音频数据，但仍发送 None 结束标记（对齐本体）。
+        """
+        accumulated_text = ""
+
+        while True:
+            text_part = await text_queue.get()
+
+            if text_part is None:
+                # 输入结束，处理累积的文本
+                if accumulated_text:
+                    try:
+                        audio_path = await self.get_audio(accumulated_text)
+                        with open(audio_path, "rb") as f:
+                            audio_data = f.read()
+                        await audio_queue.put((accumulated_text, audio_data))
+                    except Exception:
+                        # 出错时也要发送 None 结束标记
+                        pass
+                await audio_queue.put(None)
+                break
+
+            accumulated_text += text_part
+
+    async def test(self) -> bool:
+        """可达性测试（降级：调用 get_audio("hi")，路径为空/文件缺失视为不可达）。"""
+        try:
+            audio_path = await self.get_audio("hi")
+            if not audio_path or not os.path.exists(audio_path):
+                return False
+            return os.path.getsize(audio_path) > 0
+        except Exception:
+            return False
+
 
 class STTProvider(Provider):
     """Speech-to-Text Provider（宿主 ListProviders 返回 speech_to_text 能力）。"""
@@ -336,6 +410,13 @@ class STTProvider(Provider):
     async def get_text(self, audio_url: str) -> str:
         """获取音频的文本（降级：宿主无 STT RPC，返回 ""）。"""
         return ""
+
+    async def test(self) -> bool:
+        """可达性测试（降级：调用 get_text，返回空文本视为不可达）。"""
+        try:
+            return bool(await self.get_text(""))
+        except Exception:
+            return False
 
 
 class EmbeddingProvider(Provider):
@@ -351,8 +432,13 @@ class EmbeddingProvider(Provider):
         """获取单个文本的向量（降级：宿主无 Embedding RPC，返回 []）。"""
         return []
 
-    async def get_embeddings(self, texts: list[str]) -> list[list[float]]:
-        """批量获取文本的向量（降级：宿主无 Embedding RPC，返回 []）。"""
+    async def get_embeddings(self, text: list[str]) -> list[list[float]]:
+        """批量获取文本的向量（降级：宿主无 Embedding RPC，返回 []）。
+
+        Args:
+            text: 文本列表（参数名对齐本体 ``get_embeddings(text: list[str])``，
+                插件按名传参 ``text=`` 不会 TypeError）
+        """
         return []
 
     async def get_embeddings_batch(
@@ -373,7 +459,7 @@ class EmbeddingProvider(Provider):
         ``self.get_embeddings``，子类已实现批量端点的可直接复用。
 
         Args:
-            texts: 文本列表
+            texts: 文本列表（参数名对齐本体 get_embeddings_batch）
             batch_size: 每批处理的文本数量
             tasks_limit: 并发任务数量限制
             max_retries: 失败时的最大重试次数
@@ -423,6 +509,13 @@ class EmbeddingProvider(Provider):
         """获取向量的维度（降级：宿主无 Embedding RPC，返回 0）。"""
         return 0
 
+    async def test(self) -> bool:
+        """可达性测试（降级：调用 get_embedding("astrbot")，空向量视为不可达）。"""
+        try:
+            return bool(await self.get_embedding("astrbot"))
+        except Exception:
+            return False
+
 
 class RerankProvider(Provider):
     """Rerank Provider（宿主 ListProviders 返回 rerank 能力）。"""
@@ -433,8 +526,45 @@ class RerankProvider(Provider):
         if not isinstance(raw_pt, str) or not raw_pt:
             self.provider_type = ProviderType.RERANK
 
+    async def rerank(
+        self,
+        query: str,
+        documents: list[str],
+        top_n: int | None = None,
+    ) -> list:
+        """获取查询和文档的重排序分数（签名对齐本体 RerankProvider.rerank）。
 
-Providers = (Provider, TTSProvider, STTProvider, EmbeddingProvider, RerankProvider)
+        降级说明：Go 宿主桥（HostService proto）未暴露 rerank RPC（宿主
+        Go 侧有 TEIRerankSource.Rerank，见 internal/provider/sources/
+        rerank_source.go，但未接入 Python 沙箱通道），SDK 基类返回空列表
+        表示无重排结果。插件应自行处理空结果（对齐本体行为：无可用
+        Rerank 服务时 test() 抛异常，此处以空列表降级不炸）。
+
+        Args:
+            query: 查询文本
+            documents: 候选文档列表
+            top_n: 返回的最大结果数（None 表示全部）
+
+        Returns:
+            list[RerankResult]（降级：恒为空列表）
+        """
+        return []
+
+    async def test(self) -> bool:
+        """可达性测试（降级：调用 rerank，无结果视为不可达）。"""
+        try:
+            return bool(await self.rerank("Apple", documents=["apple", "banana"]))
+        except Exception:
+            return False
+
+
+Providers: TypeAlias = Union[
+    "Provider",
+    "STTProvider",
+    "TTSProvider",
+    "EmbeddingProvider",
+    "RerankProvider",
+]
 
 # 模块级注册表：provider type → ProviderMetaData（对齐原版 register.py 的
 # provider_cls_map 语义）。SDK 无第三方适配器，这里注册 SDK 内置的五个

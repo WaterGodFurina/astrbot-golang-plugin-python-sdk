@@ -1071,5 +1071,21 @@ class TestEmbeddingBatch(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2, exit=False)
+    # 1) 本文件内嵌测试（unittest.main 只加载 __main__ 模块，不扫描目录）
+    prog = unittest.main(verbosity=2, exit=False)
     TestP1Benchmark.run()
+
+    # 2) 独立测试文件：tests/test_*.py（unittest.main 不会做目录发现，
+    #    这里显式 discover，保证 CI 全量执行新增测试文件）
+    tests_dir = os.path.dirname(os.path.abspath(__file__))
+    suite = unittest.TestLoader().discover(
+        start_dir=tests_dir, pattern="test_*.py", top_level_dir=tests_dir
+    )
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
+
+    embedded_ok = (
+        prog.result.wasSuccessful() if getattr(prog, "result", None) else True
+    )
+    # 任一部分失败即以非零退出，CI 才能捕捉（exit=False 不会自动退出）
+    if not (embedded_ok and result.wasSuccessful()):
+        sys.exit(1)

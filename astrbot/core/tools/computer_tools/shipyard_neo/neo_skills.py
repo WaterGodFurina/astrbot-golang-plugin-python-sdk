@@ -1,15 +1,23 @@
 """computer_tools.shipyard_neo.neo_skills（Go 宿主兼容运行时，对齐本体）。
 
 SDK 薄壳：技能候选开发工具类的 name / description / parameters（schema）与
-本体一致，真实执行由宿主 shipyard-neo 完成。
+本体一致并经 ``builtin_tool`` 注册，真实执行由宿主 shipyard-neo 完成。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 from astrbot.core.agent.tool import FunctionTool
+from astrbot.core.tools.registry import builtin_tool
+
+# 对齐本体 neo_skills.py:15-18 的装饰器 config。
+_SHIPYARD_NEO_TOOL_CONFIG = {
+    "provider_settings.computer_use_runtime": "sandbox",
+    "provider_settings.sandbox.booter": "shipyard_neo",
+}
 
 
+@builtin_tool(config=_SHIPYARD_NEO_TOOL_CONFIG)
 @dataclass
 class GetExecutionHistoryTool(FunctionTool):
     name: str = "astrbot_get_execution_history"
@@ -31,6 +39,7 @@ class GetExecutionHistoryTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_SHIPYARD_NEO_TOOL_CONFIG)
 @dataclass
 class AnnotateExecutionTool(FunctionTool):
     name: str = "astrbot_annotate_execution"
@@ -49,6 +58,7 @@ class AnnotateExecutionTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_SHIPYARD_NEO_TOOL_CONFIG)
 @dataclass
 class CreateSkillPayloadTool(FunctionTool):
     name: str = "astrbot_create_skill_payload"
@@ -75,6 +85,7 @@ class CreateSkillPayloadTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_SHIPYARD_NEO_TOOL_CONFIG)
 @dataclass
 class GetSkillPayloadTool(FunctionTool):
     name: str = "astrbot_get_skill_payload"
@@ -90,6 +101,7 @@ class GetSkillPayloadTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_SHIPYARD_NEO_TOOL_CONFIG)
 @dataclass
 class CreateSkillCandidateTool(FunctionTool):
     name: str = "astrbot_create_skill_candidate"
@@ -124,6 +136,7 @@ class CreateSkillCandidateTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_SHIPYARD_NEO_TOOL_CONFIG)
 @dataclass
 class ListSkillCandidatesTool(FunctionTool):
     name: str = "astrbot_list_skill_candidates"
@@ -142,6 +155,7 @@ class ListSkillCandidatesTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_SHIPYARD_NEO_TOOL_CONFIG)
 @dataclass
 class EvaluateSkillCandidateTool(FunctionTool):
     name: str = "astrbot_evaluate_skill_candidate"
@@ -161,6 +175,7 @@ class EvaluateSkillCandidateTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_SHIPYARD_NEO_TOOL_CONFIG)
 @dataclass
 class PromoteSkillCandidateTool(FunctionTool):
     name: str = "astrbot_promote_skill_candidate"
@@ -189,6 +204,7 @@ class PromoteSkillCandidateTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_SHIPYARD_NEO_TOOL_CONFIG)
 @dataclass
 class ListSkillReleasesTool(FunctionTool):
     name: str = "astrbot_list_skill_releases"
@@ -208,6 +224,7 @@ class ListSkillReleasesTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_SHIPYARD_NEO_TOOL_CONFIG)
 @dataclass
 class RollbackSkillReleaseTool(FunctionTool):
     name: str = "astrbot_rollback_skill_release"
@@ -223,6 +240,7 @@ class RollbackSkillReleaseTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_SHIPYARD_NEO_TOOL_CONFIG)
 @dataclass
 class SyncSkillReleaseTool(FunctionTool):
     name: str = "astrbot_sync_skill_release"

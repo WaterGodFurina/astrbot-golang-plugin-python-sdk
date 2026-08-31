@@ -25,7 +25,11 @@ def _get_host_config() -> dict:
 
 
 def _get_callback_api_base() -> str:
-    """获取回调 API 基础地址（宿主 config.callback_api_base，SDK 降级为空）。"""
+    """获取回调 API 基础地址（宿主 config.callback_api_base，SDK 降级为空）。
+
+    对齐本体 `_get_callback_api_base`：读取 ``callback_api_base`` 配置并
+    rstrip("/")；宿主配置不可用时返回空字符串（不抛异常）。
+    """
     cfg = _get_host_config()
     return str(cfg.get("callback_api_base", "") or "").rstrip("/")
 

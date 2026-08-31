@@ -16,6 +16,56 @@ ValueT = TypeVar("ValueT")
 DefaultT = TypeVar("DefaultT")
 
 
+class _HeadersDict(dict):
+    """大小写不敏感的请求头字典（对齐本体 starlette.Headers 的 get 语义）。
+
+    保留原始键（迭代/keys()/items() 与传入一致），get / __getitem__ /
+    __contains__ / pop 对键做大小写不敏感匹配——插件写
+    ``request.headers.get("X-Token")`` 与 ``get("x-token")`` 均可命中。
+    """
+
+    def __init__(self, data: dict[str, str] | None = None) -> None:
+        super().__init__(data or {})
+        self._lower_map = {k.lower(): k for k in (data or {})}
+
+    def _resolve(self, key: str) -> str | None:
+        if not isinstance(key, str):
+            return None
+        actual = self._lower_map.get(key.lower())
+        return actual
+
+    def __getitem__(self, key: str) -> str:
+        actual = self._resolve(key)
+        if actual is None:
+            raise KeyError(key)
+        return super().__getitem__(actual)
+
+    def __contains__(self, key: object) -> bool:
+        return self._resolve(key) is not None if isinstance(key, str) else False
+
+    def get(self, key: str, default: Any = None):
+        actual = self._resolve(key)
+        if actual is None:
+            return default
+        return super().__getitem__(actual)
+
+    def pop(self, key: str, *args):
+        actual = self._resolve(key)
+        if actual is None:
+            if args:
+                return args[0]
+            raise KeyError(key)
+        self._lower_map.pop(actual.lower(), None)
+        return super().pop(actual)
+
+    def __setitem__(self, key: str, value: str) -> None:
+        old = self._resolve(key)
+        if old is not None and old != key:
+            super().__delitem__(old)
+        self._lower_map[key.lower()] = key
+        super().__setitem__(key, value)
+
+
 class PluginMultiDict(Generic[ValueT]):
     """Dictionary-like request values that preserves duplicate keys."""
 
@@ -23,8 +73,9 @@ class PluginMultiDict(Generic[ValueT]):
         self._pairs = pairs
 
     def get(self, key: str, default: Any = None, type: Callable | None = None):
-        # 正向遍历返回第一次出现的值（对齐 werkzeug MultiDict 语义）
-        for item_key, item_value in self._pairs:
+        # 逆向遍历返回最后一个出现的值（对齐本体 PluginMultiDict.get
+        # "Return the last value for a key" 语义）
+        for item_key, item_value in reversed(self._pairs):
             if item_key != key:
                 continue
             if type is None:
@@ -74,6 +125,10 @@ class PluginUploadFile:
         self._content = bytearray(content)
         self.content_length: int | None = len(self._content)
         self._pos = 0
+        # 对齐本体 <PluginUploadFile>.headers 属性（本体为 Starlette UploadFile
+        # 的 Headers）：宿主 gRPC 上传不携带 per-file 头，这里给空的
+        # 大小写不敏感字典，插件访问不炸。
+        self.headers: _HeadersDict = _HeadersDict({})
 
     async def save(self, destination: str | Path) -> None:
         path = Path(destination)
@@ -123,7 +178,9 @@ class PluginRequest:
     ) -> None:
         self.method = method.upper()
         self.path = path
-        self.headers = {k.lower(): v for k, v in (headers or {}).items()}
+        # 大小写不敏感的头字典（对齐本体 starlette.Headers 的读取语义），
+        # 保留宿主传入的原始键大小写
+        self.headers: dict[str, str] = _HeadersDict(headers or {})
         self.cookies: dict[str, str] = _parse_cookies(self.headers.get("cookie", ""))
         self.content_type: str | None = self.headers.get("content-type")
         self.client_host = client_host
@@ -445,3 +502,19 @@ def stream_response(
     merged = dict(headers or {})
     merged.setdefault("Content-Type", content_type)
     return PluginWebResponse(b"".join(parts), status_code=status_code, headers=merged)
+
+
+__all__ = [
+    "PluginMultiDict",
+    "PluginRequest",
+    "PluginRequestProxy",
+    "PluginUploadFile",
+    "PluginWebResponse",
+    "afile_response",
+    "bind_request_context",
+    "error_response",
+    "file_response",
+    "json_response",
+    "request",
+    "stream_response",
+]

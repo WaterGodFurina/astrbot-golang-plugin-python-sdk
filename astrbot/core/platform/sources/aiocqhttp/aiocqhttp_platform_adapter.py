@@ -14,4 +14,19 @@ from astrbot.core.platform.register import register_platform_adapter
 )
 class AiocqhttpAdapter(Platform):
     """占位实现：Go 宿主下 aiocqhttp 适配器实际由 Go 侧提供。"""
-    pass
+
+    def __init__(
+        self,
+        platform_config: dict | None = None,
+        platform_settings: dict | None = None,
+        event_queue=None,
+        **kwargs,
+    ) -> None:
+        """兼容本体三位置参数构造（platform_config, platform_settings,
+        event_queue），避免插件按本体签名实例化时 TypeError。实际平台
+        由 Go 宿主创建，此处仅保存字段供类型面使用。"""
+        super().__init__(platform_config or {}, event_queue, **kwargs)
+        self.settings = platform_settings or {}
+        config = platform_config or {}
+        self.host = config.get("ws_reverse_host", "")
+        self.port = config.get("ws_reverse_port", 0)

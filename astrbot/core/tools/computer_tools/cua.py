@@ -1,15 +1,23 @@
 """computer_tools.cua（Go 宿主兼容运行时，对齐本体 computer_tools/cua.py）。
 
-SDK 薄壳：工具类 name / description / parameters（schema）与本体一致，
-call 由宿主 sandbox 原生执行。
+SDK 薄壳：工具类 name / description / parameters（schema）与本体一致并经
+``builtin_tool`` 注册；call 由宿主 sandbox 的 CUA GUI 能力原生执行。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 from astrbot.core.agent.tool import FunctionTool
+from astrbot.core.tools.registry import builtin_tool
+
+# 对齐本体 cua.py:22-25 的装饰器 config。
+_CUA_TOOL_CONFIG = {
+    "provider_settings.computer_use_runtime": "sandbox",
+    "provider_settings.sandbox.booter": "cua",
+}
 
 
+@builtin_tool(config=_CUA_TOOL_CONFIG)
 @dataclass
 class CuaScreenshotTool(FunctionTool):
     """CUA 沙盒截图工具（宿主 sandbox 原生执行）。"""
@@ -37,6 +45,7 @@ class CuaScreenshotTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_CUA_TOOL_CONFIG)
 @dataclass
 class CuaMouseClickTool(FunctionTool):
     """CUA 沙盒鼠标点击工具（宿主 sandbox 原生执行）。"""
@@ -60,6 +69,7 @@ class CuaMouseClickTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_CUA_TOOL_CONFIG)
 @dataclass
 class CuaKeyboardTypeTool(FunctionTool):
     """CUA 沙盒键盘输入工具（宿主 sandbox 原生执行）。"""

@@ -508,27 +508,37 @@ class _PermissionGuardedTool(FunctionTool):
 
 
 async def ensure_builtin_tools_loaded() -> None:
-    """加载 AstrBot 内置工具（占位：SDK 无内置工具，空实现）。
+    """加载 AstrBot 内置工具（转发 tools.registry 真实现）。
 
-    原版由 star_manager / 启动流程调用，SDK 没有对应调用点，只定义函数
-    供插件 await 调用不报错。
+    与 tools/registry.py 同名符号保持同一语义（红线：同名同义），
+    避免插件从本模块 import 到恒空版本。
     """
-    return None
+    from astrbot.core.tools.registry import (
+        ensure_builtin_tools_loaded as _ensure,
+    )
+
+    return await _ensure()
 
 
 def get_builtin_tool_class(name: str) -> type | None:
-    """按名称取内置工具类（SDK 无内置工具，恒 None）。"""
-    return None
+    """按名称取内置工具类（转发 tools.registry 真实现）。"""
+    from astrbot.core.tools.registry import get_builtin_tool_class as _get
+
+    return _get(name)
 
 
 def get_builtin_tool_name(tool_cls: type) -> str | None:
-    """按类取内置工具名（SDK 无内置工具，恒 None）。"""
-    return None
+    """按类取内置工具名（转发 tools.registry 真实现）。"""
+    from astrbot.core.tools.registry import get_builtin_tool_name as _name
+
+    return _name(tool_cls)
 
 
 def iter_builtin_tool_classes():
-    """迭代所有内置工具类（SDK 无内置工具，返回空列表）。"""
-    return []
+    """迭代所有内置工具类（转发 tools.registry 真实现）。"""
+    from astrbot.core.tools.registry import iter_builtin_tool_classes as _iter
+
+    return _iter()
 
 
 class DocParam:
@@ -737,6 +747,52 @@ class FunctionToolManager:
         except Exception:
             return False
 
+    def _default_permission(self, tool_name: str) -> str:
+        """计算非内置工具的兜底权限（对齐本体同名方法）。
+
+        所有非内置工具默认 ``"member"``（不限制）；内置工具不走本方法。
+        """
+        return "member"
+
+    async def _check_tool_permission(
+        self,
+        tool_name: str,
+        context: Any,
+    ) -> str | None:
+        """校验工具调用权限（签名对齐本体）。
+
+        无权限时返回错误字符串，有权限返回 None。权限解析自
+        SharedPreferences 的 ``tool_permissions``（global 作用域，仪表盘
+        可配置 admin-only 工具）；无显式配置时继承 ``_default_permission``
+        的兜底值（member → 放行）。
+        """
+        try:
+            perms_raw = await sp.global_get("tool_permissions", {})
+        except Exception:
+            perms_raw = {}
+        defaults = perms_raw.get("_default", {}) if isinstance(perms_raw, dict) else {}
+        effective = defaults.get(tool_name)
+        if effective is None:
+            effective = self._default_permission(tool_name)
+
+        if isinstance(effective, dict):
+            effective = effective.get("permission")
+        if effective != "admin":
+            return None  # member 或未知值 → 放行
+
+        try:
+            event = context.context.event
+        except AttributeError:
+            event = None
+        if event is None or not event.is_admin():
+            sender_id = getattr(event, "get_sender_id", lambda: "unknown")()
+            return (
+                f"error: Permission denied. The tool '{tool_name}' requires admin "
+                f"privileges. Your ID: {sender_id}. "
+                "Ask admin to configure in WebUI → Extension → Components."
+            )
+        return None
+
     def get_builtin_tool(self, tool) -> "FuncTool":
         """按名称/类获取宿主内置工具（SDK 薄壳：宿主原生化，未注册抛 KeyError）。"""
         from astrbot.core.tools.registry import (
@@ -766,14 +822,19 @@ class FunctionToolManager:
         return [self.get_builtin_tool(cls) for cls in iter_builtin_tool_classes()]
 
     # ── MCP 生命周期（宿主 MCP 原生管理；SDK 薄壳保证签名/调用不抛错）───────
+    @property
     def mcp_config_path(self) -> str:
-        """MCP 配置文件路径（对齐本体：数据目录下 mcp_server.json）。"""
+        """MCP 配置文件路径（对齐本体：数据目录下 mcp_server.json）。
+
+        本体为 property（不带括号访问），插件按
+        ``manager.mcp_config_path`` 读取路径。
+        """
         return os.path.join(get_astrbot_data_path(), "mcp_server.json")
 
     def load_mcp_config(self) -> dict:
         """读取 MCP 配置（SDK 薄壳：文件缺失时返回空结构，不写盘）。"""
         try:
-            with open(self.mcp_config_path(), encoding="utf-8") as f:
+            with open(self.mcp_config_path, encoding="utf-8") as f:
                 data = json.load(f)
             return data if isinstance(data, dict) else {"mcpServers": {}}
         except (OSError, ValueError):
@@ -791,6 +852,41 @@ class FunctionToolManager:
         宿主 MCP 服务由宿主侧连接管理；此处不主动连接，返回空摘要。
         """
         return MCPInitSummary()
+
+    @staticmethod
+    async def test_mcp_server_connection(config: dict) -> list[str]:
+        """测试 MCP 服务器连接并返回工具名列表（对齐本体签名与语义）。
+
+        连接失败时抛 Exception（对齐本体：url 探测失败 / 连接失败均抛出）。
+        """
+        if "url" in config:
+            success, error_msg = await _quick_test_mcp_connection(config)
+            if not success:
+                raise Exception(error_msg)
+
+        mcp_client = MCPClient()
+        try:
+            logger.debug(f"testing MCP server connection with config: {config}")
+            connected = await mcp_client.connect_to_server(config, "test")
+            if not connected:
+                raise Exception(f"MCP server connection failed: {config.get('url', '')}")
+            tools_res = await mcp_client.list_tools_and_save()
+            tool_names = [tool.name for tool in tools_res.tools]
+        finally:
+            logger.debug("Cleaning up MCP client after testing connection.")
+            await mcp_client.cleanup()
+        return tool_names
+
+    async def sync_modelscope_mcp_servers(self, access_token: str) -> None:
+        """从 ModelScope 平台同步 MCP 服务器配置（SDK 薄壳：宿主原生管理）。
+
+        本体经 ModelScope openapi 拉取服务器列表并写回 mcp_server.json
+        后逐个 enable；SDK 的 MCP 服务由宿主 Go 侧管理，此处仅记录日志
+        并返回（面板功能，插件不依赖）。
+        """
+        logger.info(
+            "sync_modelscope_mcp_servers: SDK 下 MCP 配置由宿主管理，跳过同步。"
+        )
 
     async def enable_mcp_server(
         self,

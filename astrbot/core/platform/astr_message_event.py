@@ -158,11 +158,16 @@ class AstrMessageEvent(abc.ABC):
         return self._outline_chain(self.get_messages())
 
     def get_messages(self) -> list[BaseMessageComponent]:
+        """获取消息链。"""
         if self.message_obj:
-            return self.message_obj.message
+            return getattr(self.message_obj, "message", []) or []
         return []
 
     def get_message_type(self) -> MessageType:
+        """获取消息类型（优先 message_obj.type，缺省回退 session，对齐本体）。"""
+        message_type = getattr(self.message_obj, "type", None)
+        if isinstance(message_type, MessageType):
+            return message_type
         return self.session.message_type
 
     def get_session_id(self) -> str:
@@ -219,7 +224,8 @@ class AstrMessageEvent(abc.ABC):
                 )
 
     def is_private_chat(self) -> bool:
-        return self.session.message_type == MessageType.FRIEND_MESSAGE
+        """是否是私聊。"""
+        return self.get_message_type() == MessageType.FRIEND_MESSAGE
 
     def is_wake_up(self) -> bool:
         return self.is_wake
@@ -315,18 +321,23 @@ class AstrMessageEvent(abc.ABC):
         self._result = result
 
     def stop_event(self) -> None:
-        """停止事件处理（对齐 Python 本体语义：强制停止标记 + 已有 result 置 STOP）。
+        """停止事件处理（对齐 Python 本体语义：强制停止标记 + 置 STOP 结果）。
 
-        注意：MessageEventResult 没有 STOP 属性（STOP 在 EventResultType 枚举上），
-        必须走 result.stop_event()。
+        无结果时创建一条 STOP 的 MessageEventResult（对齐本体：
+        event.get_result() 在 stop_event() 后可拿到 STOP 结果）。
         """
         self._force_stopped = True
-        if self._result:
+        if self._result is None:
+            self.set_result(MessageEventResult().stop_event())
+        else:
             self._result.stop_event()
 
     def continue_event(self) -> None:
+        """继续事件传播（对齐本体语义：无结果时创建 CONTINUE 结果）。"""
         self._force_stopped = False
-        if self._result:
+        if self._result is None:
+            self.set_result(MessageEventResult().continue_event())
+        else:
             self._result.continue_event()
 
     def is_stopped(self) -> bool:
@@ -375,14 +386,35 @@ class AstrMessageEvent(abc.ABC):
         system_prompt: str = "",
         conversation: Conversation | None = None,
     ):
-        """创建 LLM 请求。Go 宿主桥：返回的 ProviderRequest 会以
-        llm_continue 方式反馈宿主继续走默认 LLM（提示词为本消息原文）。"""
+        """创建 LLM 请求（对齐本体 request_llm 签名与语义）。
+
+        Go 宿主桥：返回的 ProviderRequest 会以 llm_continue 方式反馈宿主
+        继续走默认 LLM（提示词为本消息原文）。
+
+        Args:
+            prompt: 提示词。
+            func_tool_manager: [Deprecated] 函数工具管理器（本体已弃用，
+                SDK 仅接受该参数保持签名兼容，不生效）。
+            tool_set: 函数工具集合（ToolSet / 工具列表）。
+            session_id: 已经过时，留空即可。
+            image_urls: 图片 URL 列表（可为 base64:// / http:// / 本地路径）。
+            audio_urls: 音频 URL 列表。
+            contexts: 上下文消息；指定时忽略 conversation（对齐本体）。
+            system_prompt: 系统提示词。
+            conversation: 可选，指定对话（人格会被用于 LLM 请求）。
+
+        Returns:
+            ProviderRequest 实例。
+        """
         if image_urls is None:
             image_urls = []
         if audio_urls is None:
             audio_urls = []
         if contexts is None:
             contexts = []
+        # 对齐本体：同时指定 contexts 与 conversation 时忽略 conversation
+        if len(contexts) > 0 and conversation:
+            conversation = None
         return ProviderRequest(
             prompt=prompt,
             session_id=session_id,

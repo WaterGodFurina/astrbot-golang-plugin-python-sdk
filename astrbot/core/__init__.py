@@ -14,12 +14,15 @@ logger = logging.getLogger("astrbot")
 
 # 全局异常（对齐本体 astrbot.core.exceptions / pip_installer 导出）
 from astrbot.core.exceptions import (  # noqa: E402
+    AstrBotError,
     DependencyConflictError,
+    EmptyModelOutputError,
+    KnowledgeBaseUploadError,
     ProviderNotFoundError,
 )
 
-# html_renderer：占位实例（对齐本体 `from astrbot.core import html_renderer`；
-# 独立模块实现，避免与 astrbot.api 产生循环导入）
+# html_renderer：渲染实例（对齐本体 `from astrbot.core import html_renderer`；
+# 独立模块实现，避免与 astrbot.api 产生循环导入，astrbot.api re-export 同一实例）
 from astrbot.core.utils.html_renderer import html_renderer  # noqa: E402
 
 # sp：共享偏好存储（对齐本体 `from astrbot.core import sp`）
@@ -35,8 +38,18 @@ from astrbot.core.file_token_service import (  # noqa: E402
     file_token_service,
 )
 
-# LogManager：插件日志管理器（对齐本体 `from astrbot.core import LogManager`）
-from astrbot.core.log import LogManager  # noqa: E402
+# LogManager / LogBroker：插件日志管理器与日志代理（对齐本体
+# `from astrbot.core import LogManager, LogBroker`）
+from astrbot.core.log import LogManager, LogBroker  # noqa: E402
+
+# DB_PATH：数据库文件路径常量（对齐本体 `from astrbot.core import DB_PATH`）
+from astrbot.core.config.default import DB_PATH  # noqa: E402
+
+# find_missing_requirements(_or_raise)：依赖缺失检查（对齐本体导出，签名一致）
+from astrbot.core.utils.requirements_utils import (  # noqa: E402
+    find_missing_requirements,
+    find_missing_requirements_or_raise,
+)
 
 # SharedPreferences：共享偏好存储类（对齐本体导出）
 from astrbot.core.utils.shared_preferences import SharedPreferences  # noqa: E402

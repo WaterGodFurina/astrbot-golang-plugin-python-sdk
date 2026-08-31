@@ -1,13 +1,22 @@
 """定时任务工具（Go 宿主兼容运行时，对齐本体 tools/cron_tools.py）。
 
-SDK 薄壳：FutureTaskTool 类定义对齐本体 name/schema，任务由宿主 cron
-子系统原生执行（创建/编辑/列表/删除均走宿主 cron manager）。
+SDK 薄壳：FutureTaskTool 类定义对齐本体 name/schema 并经 ``builtin_tool``
+注册（config 规则同本体 _CRON_TOOL_CONFIG）；任务由宿主 cron 子系统原生
+执行（internal/pipeline/cron_tools.go executeFutureTask，创建/编辑/列表/
+删除均走宿主 cron manager）。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 from astrbot.core.agent.tool import FunctionTool
+from astrbot.core.tools.registry import builtin_tool
+
+# 对齐本体 cron_tools.py:16-18 的装饰器 config（启用规则纯声明，宿主
+# Go 侧按 provider_settings.proactive_capability.add_cron_tools 装配）。
+_CRON_TOOL_CONFIG = {
+    "provider_settings.proactive_capability.add_cron_tools": True,
+}
 
 _FUTURE_TASK_SCHEMA: dict = {
     "type": "object",
@@ -46,6 +55,7 @@ _FUTURE_TASK_SCHEMA: dict = {
 }
 
 
+@builtin_tool(config=_CRON_TOOL_CONFIG)
 @dataclass
 class FutureTaskTool(FunctionTool):
     """定时任务管理工具（宿主 cron 子系统原生执行）。"""

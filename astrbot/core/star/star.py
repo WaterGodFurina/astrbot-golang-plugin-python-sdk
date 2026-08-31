@@ -51,3 +51,7 @@ class StarMetadata:
 
     def __str__(self) -> str:
         return f"Plugin {self.name} ({self.version}) by {self.author}: {self.desc}"
+
+    def __repr__(self) -> str:
+        """对齐本体：repr 与 str 返回同一格式。"""
+        return f"Plugin {self.name} ({self.version}) by {self.author}: {self.desc}"

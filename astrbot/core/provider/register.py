@@ -12,8 +12,10 @@ from typing import Callable
 
 from astrbot.core import logger
 from astrbot.core.provider.entities import ProviderMetaData, ProviderType
-from astrbot.core.provider.func_tool_manager import llm_tools  # noqa: F401  re-export
-from astrbot.core.provider.func_tool_manager import llm_tools as _llm_tools
+from astrbot.core.provider.func_tool_manager import (  # noqa: F401  re-export
+    FuncCall,
+    llm_tools,
+)
 
 provider_registry: list[ProviderMetaData] = []
 """维护了通过装饰器注册的 Provider（SDK 本地记录，宿主 Provider 由 Go 实现）"""
@@ -64,7 +66,7 @@ def register_provider_adapter(
 
 
 __all__ = [
-    "_llm_tools",
+    "FuncCall",
     "llm_tools",
     "provider_cls_map",
     "provider_registry",

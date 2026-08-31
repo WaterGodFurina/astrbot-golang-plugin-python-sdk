@@ -118,6 +118,14 @@ class ToolCallsResult:
                     ret.append({"role": "tool", "content": str(item)})
         return ret
 
+    def to_openai_messages_model(self) -> list:
+        """生成消息段对象列表（对齐本体 ToolCallsResult.to_openai_messages_model）。
+
+        返回 [tool_calls_info, *tool_calls_result]，元素为
+        AssistantMessageSegment / ToolCallMessageSegment（或兼容 dict）。
+        """
+        return [self.tool_calls_info, *self.tool_calls_result]
+
 
 @dataclass
 class ProviderRequest:
@@ -132,6 +140,169 @@ class ProviderRequest:
     conversation: Any | None = None
     tool_calls_result: Any | None = None
     model: str | None = None
+
+    def __repr__(self) -> str:
+        return (
+            f"ProviderRequest(prompt={self.prompt}, session_id={self.session_id}, "
+            f"image_count={len(self.image_urls or [])}, "
+            f"audio_count={len(self.audio_urls or [])}, "
+            f"func_tool={self.func_tool}, "
+            f"contexts={self._print_friendly_context()}, "
+            f"system_prompt={self.system_prompt}, "
+            f"conversation_id={self.conversation.cid if self.conversation else 'N/A'}, "
+        )
+
+    def __str__(self) -> str:
+        return self.__repr__()
+
+    def append_tool_calls_result(self, tool_calls_result: "ToolCallsResult") -> None:
+        """添加工具调用结果到请求中（对齐本体同名方法）。"""
+        if not self.tool_calls_result:
+            self.tool_calls_result = []
+        if isinstance(self.tool_calls_result, ToolCallsResult):
+            self.tool_calls_result = [self.tool_calls_result]
+        self.tool_calls_result.append(tool_calls_result)
+
+    def _print_friendly_context(self):
+        """打印友好的消息上下文，将多模态内容折叠为简短标记（对齐本体）。"""
+        if not self.contexts:
+            return (
+                f"prompt: {self.prompt}, image_count: {len(self.image_urls or [])}, "
+                f"audio_count: {len(self.audio_urls or [])}"
+            )
+
+        result_parts = []
+
+        for ctx in self.contexts:
+            if is_checkpoint_message(ctx):
+                continue
+            role = ctx.get("role", "unknown")
+            content = ctx.get("content", "")
+
+            if isinstance(content, str):
+                result_parts.append(f"{role}: {content}")
+            elif isinstance(content, list):
+                msg_parts = []
+                image_count = 0
+                audio_count = 0
+
+                for item in content:
+                    item_type = item.get("type", "")
+
+                    if item_type == "text":
+                        msg_parts.append(item.get("text", ""))
+                    elif item_type == "image_url":
+                        image_count += 1
+                    elif item_type == "audio_url":
+                        audio_count += 1
+
+                if image_count > 0:
+                    if msg_parts:
+                        msg_parts.append(f"[+{image_count} images]")
+                    else:
+                        msg_parts.append(f"[{image_count} images]")
+                if audio_count > 0:
+                    if msg_parts:
+                        msg_parts.append(f"[+{audio_count} audios]")
+                    else:
+                        msg_parts.append(f"[{audio_count} audios]")
+
+                result_parts.append(f"{role}: {''.join(msg_parts)}")
+
+        return "\n".join(result_parts)
+
+    async def assemble_context(self) -> dict:
+        """将请求(prompt、image_urls 和 audio_urls)包装成统一消息格式（对齐本体）。
+
+        Returns:
+            OpenAI 格式消息 dict：仅一段纯文本时降级为
+            ``{"role": "user", "content": text}``；含图片/音频/额外内容块时
+            返回多模态 content 列表格式。
+        """
+        # 延迟导入：MediaResolver 唯一权威实现在 utils.media_utils
+        from astrbot.core.utils.media_utils import MediaResolver
+
+        # 构建内容块列表
+        content_blocks = []
+
+        # 1. 用户原始发言（OpenAI 建议：用户发言在前）
+        if self.prompt and self.prompt.strip():
+            content_blocks.append({"type": "text", "text": self.prompt})
+        elif self.image_urls:
+            # 如果没有文本但有图片，添加占位文本
+            content_blocks.append({"type": "text", "text": "[图片]"})
+        elif self.audio_urls:
+            # 如果没有文本但有音频，添加占位文本
+            content_blocks.append({"type": "text", "text": "[音频]"})
+
+        # 2. 额外的内容块（系统提醒、指令等）
+        if self.extra_user_content_parts:
+            for part in self.extra_user_content_parts:
+                if hasattr(part, "model_dump_for_context"):
+                    content_blocks.append(part.model_dump_for_context())
+                elif hasattr(part, "to_dict"):
+                    content_blocks.append(part.to_dict())
+                else:
+                    content_blocks.append(part)
+
+        # 3. 图片内容
+        if self.image_urls:
+            for image_url in self.image_urls:
+                try:
+                    image_data = await MediaResolver(
+                        image_url,
+                        media_type="image",
+                    ).to_base64_data()
+                except Exception as exc:
+                    logger.warning("图片预处理失败，将忽略。错误: %s", exc)
+                    continue
+                if not image_data:
+                    logger.warning("图片预处理结果为空，将忽略。")
+                    continue
+                content_blocks.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": image_data.to_data_url()},
+                    },
+                )
+
+        # 4. 音频内容
+        if self.audio_urls:
+            for audio_url in self.audio_urls:
+                try:
+                    audio_data = await MediaResolver(
+                        audio_url,
+                        media_type="audio",
+                        default_suffix=".wav",
+                    ).to_base64_data(
+                        strict=True,
+                        target_format="wav",
+                    )
+                except Exception as exc:
+                    logger.warning("音频预处理失败，将忽略。错误: %s", exc)
+                    continue
+                if not audio_data:
+                    logger.warning("音频预处理结果为空，将忽略。")
+                    continue
+                content_blocks.append(
+                    {
+                        "type": "audio_url",
+                        "audio_url": {"url": audio_data.to_data_url()},
+                    },
+                )
+
+        # 只有当只有一个来自 prompt 的文本块且没有额外内容块时，才降级为简单格式以保持向后兼容
+        if (
+            len(content_blocks) == 1
+            and content_blocks[0]["type"] == "text"
+            and not self.extra_user_content_parts
+            and not self.image_urls
+            and not self.audio_urls
+        ):
+            return {"role": "user", "content": content_blocks[0]["text"]}
+
+        # 否则返回多模态格式
+        return {"role": "user", "content": content_blocks}
 
 
 @dataclass
@@ -278,6 +449,54 @@ class LLMResponse:
 
     def __str__(self) -> str:
         return self.completion_text if self.completion_text is not None else ""
+
+    def to_openai_tool_calls(self) -> list[dict]:
+        """转为 OpenAI tool calls 格式（对齐本体，已弃用但保留兼容）。
+
+        弃用提示：优先使用 to_openai_tool_calls_model()。
+        """
+        ret = []
+        for idx, tool_call_arg in enumerate(self.tools_call_args):
+            payload = {
+                "id": self.tools_call_ids[idx],
+                "function": {
+                    "name": self.tools_call_name[idx],
+                    "arguments": json.dumps(tool_call_arg),
+                },
+                "type": "function",
+            }
+            if self.tools_call_extra_content.get(self.tools_call_ids[idx]):
+                payload["extra_content"] = self.tools_call_extra_content[
+                    self.tools_call_ids[idx]
+                ]
+            ret.append(payload)
+        return ret
+
+    def to_openai_tool_calls_model(self) -> list:
+        """转为 ToolCall 消息段对象列表（对齐本体 to_openai_tool_calls_model）。
+
+        返回 astrbot.core.agent.message.ToolCall 列表（id/function 结构，
+        与 OpenAI tool_calls 格式一致），extra_content 按 tool_call_id 附加。
+        """
+        from astrbot.core.agent.message import ToolCall
+
+        ret = []
+        for idx, tool_call_arg in enumerate(self.tools_call_args):
+            ret.append(
+                ToolCall(
+                    id=self.tools_call_ids[idx],
+                    name=self.tools_call_name[idx],
+                    arguments=json.dumps(tool_call_arg),
+                    extra_content=self.tools_call_extra_content.get(
+                        self.tools_call_ids[idx]
+                    ),
+                ),
+            )
+        return ret
+
+    def to_openai_to_calls_model(self) -> list:
+        """to_openai_tool_calls_model 的历史拼写别名（对齐本体，已弃用）。"""
+        return self.to_openai_tool_calls_model()
 
 
 @dataclass

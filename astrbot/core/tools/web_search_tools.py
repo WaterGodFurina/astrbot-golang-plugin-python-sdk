@@ -1,8 +1,9 @@
 """Web 搜索工具（Go 宿主兼容运行时，对齐本体 tools/web_search_tools.py）。
 
 SDK 薄壳：各搜索/网页提取工具类的 name / description / parameters（schema）
-均与本体一致，宿主 web_search 引擎原生执行；
-`normalize_legacy_web_search_config` 为纯配置规范化纯函数（本地实现）。
+均与本体一致并经 ``builtin_tool`` 注册，agent 循环中的真实检索由宿主
+web_search 引擎原生执行（internal/pipeline/websearch.go）；
+``SearchResult`` / ``normalize_legacy_web_search_config`` 为纯本地对齐实现。
 """
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ import logging
 from dataclasses import dataclass, field
 
 from astrbot.core.agent.tool import FunctionTool
+from astrbot.core.tools.registry import builtin_tool
 
 logger = logging.getLogger("astrbot")
 
@@ -25,7 +27,44 @@ WEB_SEARCH_TOOL_NAMES = [
     "exa_get_contents",
 ]
 
+# 各搜索工具的装饰器 config（对齐本体 web_search_tools.py:27-50）。
+_TAVILY_WEB_SEARCH_TOOL_CONFIG = {
+    "provider_settings.web_search": True,
+    "provider_settings.websearch_provider": "tavily",
+}
+_BOCHA_WEB_SEARCH_TOOL_CONFIG = {
+    "provider_settings.web_search": True,
+    "provider_settings.websearch_provider": "bocha",
+}
+_BRAVE_WEB_SEARCH_TOOL_CONFIG = {
+    "provider_settings.web_search": True,
+    "provider_settings.websearch_provider": "brave",
+}
+_FIRECRAWL_WEB_SEARCH_TOOL_CONFIG = {
+    "provider_settings.web_search": True,
+    "provider_settings.websearch_provider": "firecrawl",
+}
+_BAIDU_WEB_SEARCH_TOOL_CONFIG = {
+    "provider_settings.web_search": True,
+    "provider_settings.websearch_provider": "baidu_ai_search",
+}
+_EXA_WEB_SEARCH_TOOL_CONFIG = {
+    "provider_settings.web_search": True,
+    "provider_settings.websearch_provider": "exa",
+}
 
+
+@dataclass
+class SearchResult:
+    """单条搜索结果（对齐本体 web_search_tools.SearchResult 字段）。"""
+
+    title: str
+    url: str
+    snippet: str
+    favicon: str | None = None
+
+
+@builtin_tool(config=_TAVILY_WEB_SEARCH_TOOL_CONFIG)
 @dataclass
 class TavilyWebSearchTool(FunctionTool):
     name: str = "web_search_tavily"
@@ -72,6 +111,7 @@ class TavilyWebSearchTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_TAVILY_WEB_SEARCH_TOOL_CONFIG)
 @dataclass
 class TavilyExtractWebPageTool(FunctionTool):
     name: str = "tavily_extract_web_page"
@@ -94,6 +134,7 @@ class TavilyExtractWebPageTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_BOCHA_WEB_SEARCH_TOOL_CONFIG)
 @dataclass
 class BochaWebSearchTool(FunctionTool):
     name: str = "web_search_bocha"
@@ -134,6 +175,7 @@ class BochaWebSearchTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_BRAVE_WEB_SEARCH_TOOL_CONFIG)
 @dataclass
 class BraveWebSearchTool(FunctionTool):
     name: str = "web_search_brave"
@@ -165,6 +207,7 @@ class BraveWebSearchTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_FIRECRAWL_WEB_SEARCH_TOOL_CONFIG)
 @dataclass
 class FirecrawlWebSearchTool(FunctionTool):
     name: str = "web_search_firecrawl"
@@ -198,6 +241,7 @@ class FirecrawlWebSearchTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_FIRECRAWL_WEB_SEARCH_TOOL_CONFIG)
 @dataclass
 class FirecrawlExtractWebPageTool(FunctionTool):
     name: str = "firecrawl_extract_web_page"
@@ -232,6 +276,7 @@ class FirecrawlExtractWebPageTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_BAIDU_WEB_SEARCH_TOOL_CONFIG)
 @dataclass
 class BaiduWebSearchTool(FunctionTool):
     name: str = "web_search_baidu"
@@ -261,6 +306,7 @@ class BaiduWebSearchTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_EXA_WEB_SEARCH_TOOL_CONFIG)
 @dataclass
 class ExaWebSearchTool(FunctionTool):
     name: str = "web_search_exa"
@@ -307,6 +353,7 @@ class ExaWebSearchTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_EXA_WEB_SEARCH_TOOL_CONFIG)
 @dataclass
 class ExaGetContentsTool(FunctionTool):
     name: str = "exa_get_contents"
@@ -332,10 +379,47 @@ class ExaGetContentsTool(FunctionTool):
 def normalize_legacy_web_search_config(cfg) -> None:
     """规范化旧版 web_search 配置（对齐本体 normalize_legacy_web_search_config）。
 
-    Go 宿主配置由宿主侧 web_search 引擎读取，SDK 侧空实现保证调用不报错。
+    与本体一致的两条迁移规则（纯内存修改）：
+    - ``websearch_provider == "default"`` 且 ``web_search`` 开启时关闭
+      web_search（default 提供方已不再支持）；
+    - 各家 API key 为字符串时转成 ``[value]`` 列表（空串转空列表）。
+
+    本体在改动后调用 ``cfg.save_config()``；SDK 同样尝试调用（宿主
+    AstrBotConfig 支持时生效），失败仅告警不抛错。
     """
-    _ = cfg
-    return None
+    provider_settings = cfg.get("provider_settings") if isinstance(cfg, dict) else None
+    if not provider_settings:
+        return
+
+    changed = False
+    if (
+        provider_settings.get("websearch_provider") == "default"
+        and provider_settings.get("web_search", False)
+    ):
+        provider_settings["web_search"] = False
+        changed = True
+        logger.warning(
+            "The default websearch provider is no longer supported. "
+            "Web search has been disabled and the config was saved.",
+        )
+
+    for setting_name in (
+        "websearch_tavily_key",
+        "websearch_bocha_key",
+        "websearch_brave_key",
+        "websearch_firecrawl_key",
+        "websearch_exa_key",
+    ):
+        value = provider_settings.get(setting_name)
+        if isinstance(value, str):
+            provider_settings[setting_name] = [value] if value else []
+            changed = True
+
+    if changed:
+        try:
+            cfg.save_config()
+        except Exception as exc:
+            logger.warning("save_config failed while normalizing web search config: %s", exc)
 
 
 __all__ = [

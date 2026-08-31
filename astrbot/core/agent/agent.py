@@ -11,6 +11,7 @@ from typing import Any, Generic
 
 from astrbot.core.agent.hooks import BaseAgentRunHooks
 from astrbot.core.agent.run_context import TContext
+from astrbot.core.agent.tool import FunctionTool
 
 
 @dataclass
@@ -19,7 +20,7 @@ class Agent(Generic[TContext]):
 
     name: str
     instructions: str | None = None
-    tools: list | None = None
+    tools: list[str | FunctionTool] | None = None
     run_hooks: BaseAgentRunHooks[TContext] | None = None
     begin_dialogs: list[Any] | None = None
 

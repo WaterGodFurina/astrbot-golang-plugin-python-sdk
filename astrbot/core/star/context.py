@@ -238,6 +238,18 @@ class _PlatformStub:
     def get_client(self) -> _PlatformBotProxy:
         return self._bot
 
+    async def send_by_session(self, session, message_chain) -> bool:
+        """通过会话发送消息（对齐本体 Platform.send_by_session 签名）。
+
+        跨进程实现：经宿主 HostService.SendMessage 按平台实例发送
+        （session 可为 MessageSession / unified_msg_origin 字符串）。
+        返回是否发送成功（宿主侧平台不存在/发送失败返回 False）。
+        """
+        bridge = get_host_bridge()
+        if bridge is None or not bridge.ensure_connected():
+            raise RuntimeError("宿主桥未就绪，send_by_session 不可用")
+        return await bridge.send_message_async(session, message_chain)
+
     def get_stats(self) -> dict:
         meta = self._meta
         return {
@@ -334,8 +346,13 @@ class Context:
         self._config_loaded: bool = False
         self.plugin_name: str = ""
         self.plugin_id: str = ""
-        # 平台管理器占位（对齐本体 Context.platform_manager 属性）
-        self.platform_manager = _PlatformManagerStub()
+        # 平台管理器（对齐本体 Context.platform_manager：使用 manager.PlatformManager
+        # 实例而非内部 _PlatformManagerStub，保证
+        # isinstance(context.platform_manager, PlatformManager) 与本体一致；
+        # 惰性导入避免 manager.py ↔ context.py 模块级循环导入）
+        from astrbot.core.platform.manager import PlatformManager
+
+        self.platform_manager = PlatformManager()
         # 管理器（对齐 Python 本体 Context：provider_manager / persona_manager
         # / conversation_manager / persona_mgr（别名）/ _star_manager）
         from astrbot.core.conversation_mgr import ConversationManager
@@ -360,10 +377,29 @@ class Context:
         from astrbot.core.utils.cron_manager import CronJobManager
 
         self.cron_manager = CronJobManager()
-        # register_task 跟踪的任务（terminate 时取消）
-        self._tasks: list[Any] = []
+        # 知识库管理器（对齐本体 Context.kb_manager；宿主未暴露 KB RPC，
+        # 数据操作为降级 no-op，但属性面必须存在——SDK 自身
+        # knowledge_base_tools.retrieve_knowledge_base 也经此转发）
+        self.kb_manager = KnowledgeBaseManager()
+        """知识库管理器（对齐本体 Context.kb_manager）"""
+        # 配置文件管理器（非 webui，对齐本体 Context.astrbot_config_mgr）
+        self.astrbot_config_mgr = AstrBotConfigManager()
+        """配置文件管理器（非webui，对齐本体 Context.astrbot_config_mgr）"""
+        # 子 Agent 编排器（对齐本体 Context.subagent_orchestrator，可为 None）
+        self.subagent_orchestrator = SubAgentOrchestrator(
+            self.get_llm_tool_manager(),
+            self.persona_manager,
+        )
+        # register_task 跟踪的任务（terminate 时取消）；_register_tasks 为
+        # 本体历史命名别名（本体 context.py:129），两名字指向同一列表
+        self._register_tasks: list[Any] = []
+        self._tasks: list[Any] = self._register_tasks
         # register_web_api 注册的 Web API：[(route, handler, methods, desc)]
         self._web_apis: list[tuple] = []
+        # get_db() 缓存的数据库占位实例（宿主未暴露通用 DB RPC，方法为降级实现）
+        self._db: BaseDatabase | None = None
+        # register_provider 登记的插件自定义 Provider（对齐本体可注册语义）
+        self._registered_providers: list[Any] = []
 
     @property
     def registered_web_apis(self) -> list[tuple]:
@@ -446,7 +482,14 @@ class Context:
 
     # ── Provider 管理（同步接口：插件同步调用）──────────────────────────────
     def get_provider_by_id(self, provider_id: str):
-        """通过 ID 获取对应的 Provider（同步；未找到返回 None）。"""
+        """通过 ID 获取对应的 Provider（同步；未找到返回 None）。
+
+        插件经 register_provider 注册的自定义 Provider 优先匹配。
+        """
+        for prov in self._registered_providers:
+            prov_id = getattr(prov, "meta_id", None) or getattr(prov, "provider_id", None)
+            if prov_id == provider_id:
+                return prov
         try:
             return self.provider_manager._get_provider_by_id(provider_id)
         except Exception as e:
@@ -454,12 +497,15 @@ class Context:
             return None
 
     def get_all_providers(self) -> list:
-        """获取所有用于文本生成任务的 LLM Provider（Chat_Completion 类型）。"""
+        """获取所有用于文本生成任务的 LLM Provider（Chat_Completion 类型）。
+
+        含插件经 register_provider 注册的自定义 Provider（对齐本体语义）。
+        """
         try:
-            return self.provider_manager.provider_insts
+            return self.provider_manager.provider_insts + self._registered_providers
         except Exception as e:
             logger.warning(f"get_all_providers 失败: {e}")
-            return []
+            return list(self._registered_providers)
 
     def get_all_tts_providers(self) -> list:
         """获取所有用于 TTS 任务的 Provider。"""
@@ -488,42 +534,42 @@ class Context:
     def get_using_provider(self, umo: str | None = None):
         """获取当前使用的 LLM Provider（同步；插件侧同步调用）。"""
         return self.provider_manager.get_using_provider(
-            capability="chat_completion",
+            provider_type="chat_completion",
             umo=umo,
         )
 
     def get_using_tts_provider(self, umo: str | None = None):
         """获取当前使用的 TTS Provider（同步）。"""
         return self.provider_manager.get_using_provider(
-            capability="text_to_speech",
+            provider_type="text_to_speech",
             umo=umo,
         )
 
     def get_using_stt_provider(self, umo: str | None = None):
         """获取当前使用的 STT Provider（同步）。"""
         return self.provider_manager.get_using_provider(
-            capability="speech_to_text",
+            provider_type="speech_to_text",
             umo=umo,
         )
 
     async def get_using_provider_async(self, umo: str | None = None):
         """获取当前使用的 LLM Provider（异步版）。"""
         return await self.provider_manager.get_using_provider_async(
-            capability="chat_completion",
+            provider_type="chat_completion",
             umo=umo,
         )
 
     async def get_using_tts_provider_async(self, umo: str | None = None):
         """获取当前使用的 TTS Provider（异步版）。"""
         return await self.provider_manager.get_using_provider_async(
-            capability="text_to_speech",
+            provider_type="text_to_speech",
             umo=umo,
         )
 
     async def get_using_stt_provider_async(self, umo: str | None = None):
         """获取当前使用的 STT Provider（异步版）。"""
         return await self.provider_manager.get_using_provider_async(
-            capability="speech_to_text",
+            provider_type="speech_to_text",
             umo=umo,
         )
 
@@ -624,7 +670,10 @@ class Context:
             contexts_json=contexts_json,
             provider_id=chat_provider_id,
         )
-        resp = LLMResponse(role="assistant")
+        # completion_text 必须回填：插件常读 resp.completion_text（对齐本体
+        # prov.text_chat 返回的 LLMResponse），只填 result_chain 会让
+        # completion_text 恒为 None（静默错）。
+        resp = LLMResponse(role="assistant", completion_text=text)
         from astrbot.core.message.message_event_result import MessageChain
         from astrbot.core.message.components import Plain
 
@@ -646,11 +695,14 @@ class Context:
         tool_call_timeout: int = 120,
         **kwargs,
     ) -> Any:
-        """运行 Agent 工具循环（对齐本体 Context.tool_loop_agent）。
+        """运行 Agent 工具循环（对齐本体 Context.tool_loop_agent 签名）。
 
-        SDK 降级：Go 宿主 Agent 编排链原生执行工具循环；此方法仅保证按
-        原版签名可 import / 调用，降级为一次 LLM 生成（不迭代工具循环），
-        返回 LLMResponse。
+        SDK 降级：当前宿主桥 ChatLLM RPC 为单轮调用（返回纯文本，
+        见 lifecycle.go chatLLMForPlugins → pipeline.ChatLLMFromConfig，
+        不执行工具循环），故本方法降级为一次 LLM 生成——tools 会随请求
+        传给模型（模型可能返回 tool_calls 文本），但 SDK/宿主均不会执行
+        工具迭代。返回 LLMResponse。需要真工具循环时请走消息管线的默认
+        LLM（宿主 ProcessStage 原生执行工具循环）。
         """
         return await self.llm_generate(
             chat_provider_id=chat_provider_id,
@@ -699,19 +751,69 @@ class Context:
         self._tasks.clear()
 
     def get_event_queue(self):
+        """获取事件队列（SDK 薄壳：事件流在宿主原生运行，返回 None）。"""
         return None
 
-    def get_platform(self, platform_type):
+    def get_platform(self, platform_type) -> Platform | None:
+        """获取指定类型的平台适配器（对齐本体 Context.get_platform）。
+
+        Args:
+            platform_type: 平台名称字符串（如 "aiocqhttp"）或
+                PlatformAdapterType 枚举成员。
+
+        Returns:
+            平台适配器实例（宿主 ListPlatforms 构造的占位实例），
+            未找到返回 None。
+        """
+        for platform in self.platform_manager.get_insts():
+            name = platform.meta().name
+            if isinstance(platform_type, str):
+                if name == platform_type:
+                    return platform
+            elif (
+                name in ADAPTER_NAME_2_TYPE
+                and ADAPTER_NAME_2_TYPE[name] & platform_type
+            ):
+                return platform
         return None
 
-    def get_platform_inst(self, platform_id: str):
+    def get_platform_inst(self, platform_id: str) -> Platform | None:
+        """获取指定 ID 的平台适配器实例（对齐本体 Context.get_platform_inst）。
+
+        Args:
+            platform_id: 平台适配器的唯一标识符（可经
+                event.get_platform_id() 获取）。
+
+        Returns:
+            平台适配器实例，未找到返回 None。
+        """
+        for platform in self.platform_manager.get_insts():
+            if platform.meta().id == platform_id:
+                return platform
         return None
 
-    def get_db(self):
-        return None
+    def get_db(self) -> BaseDatabase:
+        """获取 AstrBot 数据库（对齐本体 Context.get_db）。
+
+        SDK 降级：宿主未向 Python 插件暴露通用 DB RPC，返回
+        BaseDatabase 降级实例（各方法返回空结果，不再抛 AttributeError），
+        保证 `context.get_db().get_conversations(...)` 等调用可安全执行。
+        """
+        if self._db is None:
+            self._db = BaseDatabase()
+        return self._db
 
     def register_provider(self, provider) -> None:
-        pass
+        """注册一个 LLM Provider（Chat_Completion 类型，对齐本体语义）。
+
+        本体将 provider 追加到 provider_manager.provider_insts（持久列表）；
+        SDK 的 provider_insts 为宿主实时清单（每次拉取），故插件注册的
+        provider 保存在 Context 本地并合入 get_all_providers /
+        get_provider_by_id 的返回（宿主管线不会路由到插件自定义 provider，
+        但插件注册后可经本 Context 查询使用）。
+        """
+        if provider not in self._registered_providers:
+            self._registered_providers.append(provider)
 
     def register_llm_tool(self, name: str, func_args: list, desc: str, func_obj) -> None:
         from astrbot.core.provider.func_tool_manager import llm_tools

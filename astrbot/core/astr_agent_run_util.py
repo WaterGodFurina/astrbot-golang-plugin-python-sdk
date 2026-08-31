@@ -30,7 +30,7 @@ def _truncate_tool_result(text: str, limit: int = 70) -> str:
 
 
 async def run_agent(
-    agent_runner: "ToolLoopAgentRunner",
+    agent_runner: "AgentRunner",
     max_step: int = 30,
     show_tool_use: bool = True,
     show_tool_call_result: bool = False,
@@ -48,12 +48,12 @@ async def run_agent(
     if agent_runner is None:
         return
         yield  # pragma: no cover - 保证是异步生成器
-    async for _item in agent_runner.step_until_done(max_steps=max_step):
+    async for _item in agent_runner.step_until_done(max_step):
         yield None
 
 
 async def run_live_agent(
-    agent_runner: "ToolLoopAgentRunner",
+    agent_runner: "AgentRunner",
     tts_provider=None,
     max_step: int = 30,
     show_tool_use: bool = True,
@@ -70,7 +70,7 @@ async def run_live_agent(
     if agent_runner is None:
         return
         yield  # pragma: no cover - 保证是异步生成器
-    async for _item in agent_runner.step_until_done(max_steps=max_step):
+    async for _item in agent_runner.step_until_done(max_step):
         yield None
 
 

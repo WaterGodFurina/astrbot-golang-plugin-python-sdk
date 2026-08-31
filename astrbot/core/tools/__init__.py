@@ -7,6 +7,8 @@ base/message/web_search），SDK 侧提供同名薄壳类保证插件 import 面
 from __future__ import annotations
 
 from astrbot.core.tools.registry import (  # noqa: F401
+    BuiltinToolConfigCondition,
+    BuiltinToolConfigRule,
     builtin_tool,
     ensure_builtin_tools_loaded,
     get_builtin_tool_class,
@@ -18,6 +20,8 @@ from astrbot.core.tools.registry import (  # noqa: F401
 )
 
 __all__ = [
+    "BuiltinToolConfigCondition",
+    "BuiltinToolConfigRule",
     "builtin_tool",
     "ensure_builtin_tools_loaded",
     "get_builtin_tool_class",

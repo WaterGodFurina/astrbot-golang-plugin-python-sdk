@@ -1,19 +1,20 @@
 """Agent 移交工具（Go 宿主兼容运行时）。
 
-对齐 Python 本体 `astrbot.core.agent.handoff.HandoffTool`：把任务移交给
-另一个子代理。SDK 薄壳：构造 `transfer_to_<agent.name>` 工具（name /
-parameters / description 与本体一致），工具注册与执行全部由宿主 Agent
-编排链完成，插件仅构造/继承本类。
+对齐 Python 本体 `astrbot.core.agent.handoff.HandoffTool`：继承
+FunctionTool 的工具子类，把任务移交给另一个子代理。构造
+`transfer_to_<agent.name>` 工具（name / parameters / description 与本体
+一致），工具注册与执行全部由宿主 Agent 编排链完成，插件仅构造/继承本类。
 """
 from __future__ import annotations
 
 from typing import Any, Generic
 
-from astrbot.core.agent.run_context import ContextWrapper, TContext
+from astrbot.core.agent.tool import FunctionTool
+from astrbot.core.agent.run_context import TContext
 
 
-class HandoffTool(Generic[TContext]):
-    """Handoff 工具（对齐本体命名与默认 schema，宿主侧执行移交）。
+class HandoffTool(FunctionTool, Generic[TContext]):
+    """Handoff 工具（对齐本体：FunctionTool 子类 + 泛型）。
 
     构造参数与本体一致：``agent`` 即子代理目标（需有 ``name`` 属性）；
     工具名固定为 ``transfer_to_<agent.name>``，供 Agent 编排链识别。
@@ -31,17 +32,17 @@ class HandoffTool(Generic[TContext]):
         description = tool_description or self.default_description(
             getattr(agent, "name", None)
         )
-        # 构造基础工具名（对齐本体 transfer_to_<name>）。
-        self.name: str = f"transfer_to_{getattr(agent, 'name', 'another')}"
-        self.description: str = description
-        self.parameters: dict = parameters or self.default_parameters()
-        self.agent: Any = agent
+        super().__init__(
+            name=f"transfer_to_{getattr(agent, 'name', 'another')}",
+            parameters=parameters or self.default_parameters(),
+            description=description,
+            **kwargs,
+        )
         # 子代理可选的 chat provider 覆盖（对齐本体：非空时移交使用该
         # provider 而非全局默认；Go 宿主编排链读取）。
         self.provider_id: str | None = None
-        self.handler: Any = None
-        self.active: bool = True
-        self.handler_module_path: str | None = None
+        # 对齐本体：super().__init__() 之后赋值，避免父类覆盖该属性
+        self.agent: Any = agent
 
     def default_parameters(self) -> dict:
         """默认参数 schema（与本体完全一致）：input 任务说明 /
@@ -81,12 +82,6 @@ class HandoffTool(Generic[TContext]):
         """默认描述：把任务移交给另一个子代理。"""
         agent_name = agent_name or "another"
         return f"Delegate tasks to {agent_name} agent to handle the request."
-
-    async def call(self, context: ContextWrapper, **int_args: Any) -> Any:
-        """执行移交（宿主 Agent 编排链原生执行，SDK 侧不实际触发）。"""
-        raise NotImplementedError(
-            "HandoffTool 由宿主 Agent 编排链执行，插件不应直接调用"
-        )
 
 
 __all__ = ["HandoffTool"]

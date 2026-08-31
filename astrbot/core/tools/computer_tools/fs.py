@@ -1,15 +1,26 @@
 """computer_tools.fs（Go 宿主兼容运行时，对齐本体 computer_tools/fs.py）。
 
-SDK 薄壳：文件工具类的 name / description / parameters（schema）与本体一致，
-真实读写由宿主 sandbox 原生执行。
+SDK 薄壳：文件工具类的 name / description / parameters（schema）与本体一致
+并经 ``builtin_tool`` 注册，真实读写由宿主 sandbox 原生执行
+（internal/pipeline/computer_tools.go 的 shell/python/fs 分支）。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 from astrbot.core.agent.tool import FunctionTool
+from astrbot.core.tools.registry import builtin_tool
+
+# 对齐本体 fs.py:68-73 的装饰器 config。
+_COMPUTER_RUNTIME_TOOL_CONFIG = {
+    "provider_settings.computer_use_runtime": ("local", "sandbox"),
+}
+_SANDBOX_RUNTIME_TOOL_CONFIG = {
+    "provider_settings.computer_use_runtime": "sandbox",
+}
 
 
+@builtin_tool(config=_COMPUTER_RUNTIME_TOOL_CONFIG)
 @dataclass
 class FileReadTool(FunctionTool):
     name: str = "astrbot_file_read_tool"
@@ -40,6 +51,7 @@ class FileReadTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_COMPUTER_RUNTIME_TOOL_CONFIG)
 @dataclass
 class FileWriteTool(FunctionTool):
     name: str = "astrbot_file_write_tool"
@@ -62,6 +74,7 @@ class FileWriteTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_COMPUTER_RUNTIME_TOOL_CONFIG)
 @dataclass
 class FileEditTool(FunctionTool):
     name: str = "astrbot_file_edit_tool"
@@ -92,6 +105,7 @@ class FileEditTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_COMPUTER_RUNTIME_TOOL_CONFIG)
 @dataclass
 class GrepTool(FunctionTool):
     name: str = "astrbot_grep_tool"
@@ -138,6 +152,7 @@ class GrepTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_SANDBOX_RUNTIME_TOOL_CONFIG)
 @dataclass
 class FileUploadTool(FunctionTool):
     name: str = "astrbot_upload_file"
@@ -160,6 +175,7 @@ class FileUploadTool(FunctionTool):
     )
 
 
+@builtin_tool(config=_SANDBOX_RUNTIME_TOOL_CONFIG)
 @dataclass
 class FileDownloadTool(FunctionTool):
     name: str = "astrbot_download_file"

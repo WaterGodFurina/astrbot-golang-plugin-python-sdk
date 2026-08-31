@@ -1,11 +1,17 @@
 """文件令牌服务（Go 宿主兼容运行时）。
 
-对齐 Python 本体 `astrbot.core.file_token_service.FileTokenService` 的接口，
+对齐 Python 本体 `astrbot.core.file_token_service.FileTokenService` 的
+接口面（本体方法：register_file / check_token_expired / handle_file）。
 SDK 无文件服务基础设施，全部方法降级为不抛异常的空实现：
 
-- register_file(path) → 返回 None（无令牌可注册）
-- get_url_from_file_path(path) → 返回 None（无公开 URL）
+- register_file(path) → 返回 None（宿主 dashboard 无 /api/file/{token}
+  通用下载路由，即使返回令牌也无法被宿主 WebUI 解析；插件发本地文件
+  时宿主 pipeline 直接消费本地路径/file:// URI，无需令牌 URL）
 - check_token_expired / handle_file → 兼容占位
+- get_url_from_file_path 为 SDK 扩展方法（本体无此方法），同样降级
+
+插件侧组件（Image/File/Video.register_to_file_service 等）已各自
+降级实现，不依赖本服务返回令牌。
 """
 from __future__ import annotations
 

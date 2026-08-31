@@ -15,6 +15,7 @@ SetProvider），本模块负责拉取、包装（Provider 对象）与切换转
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -208,19 +209,20 @@ class ProviderManager:
 
     def get_using_provider(
         self,
-        capability: ProviderType | str = "chat_completion",
+        provider_type: ProviderType | str = "chat_completion",
         umo: str | None = None,
     ) -> Provider | None:
         """获取正在使用的 Provider 实例（同步；宿主桥同步 RPC）。
 
-        第一参数兼容两种传法（对齐本体签名）：
+        第一参数名对齐本体 ``get_using_provider(provider_type, umo)``，
+        插件按名传参 ``provider_type=`` 不会 TypeError；同时兼容两种传值：
         - ProviderType 枚举（如 ProviderType.CHAT_COMPLETION → "chat_completion"）
         - 宿主能力字符串（如 "chat_completion"，SDK 原有用法）
 
         结果缓存到 curr_provider_inst / curr_stt_provider_inst /
         curr_tts_provider_inst 对应属性。
         """
-        capability = _to_capability(capability)
+        capability = _to_capability(provider_type)
         try:
             data = self._bridge().get_using_provider(umo or "", capability)
         except Exception as e:
@@ -234,11 +236,11 @@ class ProviderManager:
 
     async def get_using_provider_async(
         self,
-        capability: ProviderType | str = "chat_completion",
+        provider_type: ProviderType | str = "chat_completion",
         umo: str | None = None,
     ) -> Provider | None:
         """获取正在使用的 Provider 实例（异步版，签名同 get_using_provider）。"""
-        capability = _to_capability(capability)
+        capability = _to_capability(provider_type)
         try:
             data = await self._bridge().get_using_provider_async(umo or "", capability)
         except Exception as e:
@@ -346,6 +348,53 @@ class ProviderManager:
                 )
 
     # ── 管理方法（宿主 Provider 原生管理，SDK 薄壳对齐本体方法面）────────────
+    def get_provider_config_by_id(
+        self,
+        provider_id: str,
+        *,
+        merged: bool = False,
+    ) -> dict | None:
+        """Get a provider config by id（签名对齐本体同名方法）。
+
+        从宿主 list_providers 返回的原始配置 dict 中查找 provider_id。
+        SDK 无 provider_sources 配置源概念（宿主原生管理），merged 参数
+        仅保持签名兼容，返回结果与 merged=False 相同。
+
+        Args:
+            provider_id: 提供商 ID。
+            merged: 是否合并 provider_source 配置（SDK 中无实际作用）。
+
+        Returns:
+            提供商配置 dict（副本）；未找到返回 None。
+        """
+        for item in self._list_providers():
+            if getattr(item, "meta_id", "") == provider_id:
+                config = getattr(item, "provider_config", None)
+                if isinstance(config, dict):
+                    return copy.deepcopy(config)
+                return None
+        return None
+
+    def get_merged_provider_config(self, provider_config: dict) -> dict:
+        """获取 provider 配置和 provider_source 配置合并后的结果（签名对齐本体）。
+
+        SDK 无 provider_sources 配置源概念（宿主原生管理），此处仅返回
+        配置的深拷贝，保持语义：key 为 provider id，value 为配置 dict。
+        """
+        return copy.deepcopy(provider_config or {})
+
+    def dynamic_import_provider(self, type: str) -> None:
+        """动态导入提供商适配器模块（SDK 薄壳：宿主原生管理，no-op）。
+
+        本体按 type 从 .sources 动态 import 对应适配器类；SDK 的 Provider
+        实例数据全部来自宿主 Go 侧（internal/provider/sources），无 Python
+        适配器需要导入。保留方法保证插件调用不炸。
+        """
+        logger.debug(
+            "dynamic_import_provider(%s): SDK 无 Python 适配器，宿主原生管理（no-op）",
+            type,
+        )
+
     async def initialize(self) -> None:
         """初始化全部 Provider（SDK 薄壳：宿主已初始化，no-op）。"""
 

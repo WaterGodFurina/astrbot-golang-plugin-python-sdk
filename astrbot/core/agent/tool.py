@@ -34,31 +34,19 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Generic
 
-from astrbot.core.agent.run_context import ContextWrapper  # noqa: F401  权威定义见 run_context.py（避免同名不同义）
-from astrbot.core.agent.run_context import NoContext, TContext  # noqa: F401  对齐本体 run_context 导出
+import mcp.types
+
+from astrbot.core.agent.run_context import ContextWrapper, TContext  # noqa: F401  权威定义见 run_context.py（避免同名不同义）
+from astrbot.core.agent.run_context import NoContext  # noqa: F401  对齐本体 run_context 导出
 from astrbot.core.message.message_event_result import MessageEventResult
 from astrbot.core.utils.deprecation import deprecated
 
 ParametersType = dict[str, Any]
 
-
-@dataclass
-class ToolExecResult:
-    """工具执行结果（对齐本体 ToolExecResult：is_success / result / error）。
-
-    本体将 ToolExecResult 定义为 `str | mcp.CallToolResult` 类型别名，SDK
-    不使用 mcp，故用普通 dataclass 承载同样的语义：成功标记 + 结果内容 +
-    错误信息。
-    """
-
-    is_success: bool = False
-    """工具执行是否成功"""
-    result: Any = None
-    """工具执行结果内容"""
-    error: str | None = None
-    """错误信息（失败时非空，可空）"""
+# 工具执行结果（对齐本体 ToolExecResult 类型别名：str 或 mcp CallToolResult）。
+ToolExecResult = str | mcp.types.CallToolResult
 
 
 @dataclass
@@ -100,8 +88,8 @@ class ToolSchema:
 
 
 @dataclass
-class FunctionTool(ToolSchema):
-    """LLM 函数工具（普通 dataclass，插件可子类化）。
+class FunctionTool(ToolSchema, Generic[TContext]):
+    """LLM 函数工具（普通 dataclass，插件可子类化；泛型对齐本体）。
 
     字段全部带默认值：插件子类既可整类覆写（dataclass 子类化），也可在
     `__init__` 中传参覆写，均不破坏既有子类。
@@ -123,11 +111,12 @@ class FunctionTool(ToolSchema):
     def __repr__(self) -> str:
         return f"FuncTool(name={self.name}, parameters={self.parameters}, description={self.description})"
 
-    async def call(self, context: ContextWrapper, **kwargs) -> Any:
+    async def call(self, context: ContextWrapper[TContext], **kwargs) -> ToolExecResult:
         """执行工具调用（handler 字段优先级最高）。
 
         Args:
-            context: 运行期上下文包装（ContextWrapper，可为空 contexts/wrapped）。
+            context: 运行期上下文包装（ContextWrapper，本体约定首参，
+                插件经 context.context.event 取事件）。
         """
         raise NotImplementedError(
             "FunctionTool.call() 必须由子类实现或设置 handler。"

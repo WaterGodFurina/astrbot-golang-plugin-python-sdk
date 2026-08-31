@@ -24,6 +24,13 @@ class PlatformManager(_PlatformManagerStub):
     def __init__(self, config: Any = None, event_queue: Any = None) -> None:
         super().__init__()
         self.config = config
+        # 对齐本体公开属性（本体 manager.py:30-31）：astrbot_config 为全局
+        # 配置对象，platforms_config 为其中的平台配置列表
+        self.astrbot_config = config
+        if isinstance(config, dict) or hasattr(config, "get"):
+            self.platforms_config: list = config.get("platform") or []
+        else:
+            self.platforms_config = []
         self.event_queue = event_queue
         self.settings = getattr(config, "get", lambda k, d=None: d)("platform_settings") if config else None
 
@@ -36,6 +43,12 @@ class PlatformManager(_PlatformManagerStub):
     def get_insts(self) -> list:
         """获取平台实例列表（从宿主 ListPlatforms 惰性拉取）。"""
         return super().get_insts()
+
+    @property
+    def platform_insts(self) -> list:
+        """平台实例列表属性（对齐本体 PlatformManager.platform_insts，
+        本体 manager.py:24；SDK 以宿主实时清单呈现，只读）。"""
+        return self.get_insts()
 
     def get_all_stats(self) -> dict:
         """全部平台统计（SDK 薄壳：宿主经 CallAction 提供，此处返回空）。"""

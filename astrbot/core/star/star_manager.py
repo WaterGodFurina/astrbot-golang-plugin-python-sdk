@@ -191,6 +191,15 @@ class PluginManager:
         # bridge 可以是 HostBridge 实例，也可以是返回 HostBridge 的
         # 可调用对象（Context 传入 self._bridge 保持单桥来源一致）
         self._bridge_getter: Any = bridge
+        # 对齐本体 star_manager.py:193-199：PluginManager 构造时把 Context
+        # 注入 StarTools（模块级共享），否则 StarTools.send_message /
+        # register_llm_tool / activate_llm_tool 等在生产中恒抛
+        # "StarTools not initialized"（get_data_dir 之外的 StarTools 方法
+        # 全部不可用）。
+        if context is not None:
+            from astrbot.core.star.star_tools import StarTools
+
+            StarTools.initialize(context)
 
     def _bridge(self):
         if self._bridge_getter is None:
@@ -231,18 +240,37 @@ class PluginManager:
             raise Exception(f"启用插件 {plugin_name} 失败。")
         logger.info(f"插件 {plugin_name} 已启用。")
 
-    async def install_plugin(self, repo: str) -> None:
-        """安装插件（repo 为仓库地址）。"""
-        try:
-            ok = await self._bridge().install_plugin_async(repo)
-        except Exception as e:
-            logger.error(f"安装插件 {repo} 失败: {e}")
-            raise Exception(f"安装插件 {repo} 失败: {e}") from e
-        if not ok:
-            raise Exception(f"安装插件 {repo} 失败。")
+    async def install_plugin(
+        self,
+        repo_url: str,
+        proxy: str = "",
+        ignore_version_check: bool = False,
+        download_url: str = "",
+    ) -> None:
+        """安装插件（对齐本体签名 install_plugin(repo_url, proxy, ignore_version_check, download_url)）。
 
-    async def uninstall_plugin(self, plugin_name: str) -> None:
-        """卸载插件。"""
+        Go 宿主原生执行安装/依赖安装/编译（internal/plugin 安装链路），
+        SDK 侧仅转发仓库地址；其余参数按本体签名保留（宿主忽略）。
+        """
+        try:
+            ok = await self._bridge().install_plugin_async(repo_url)
+        except Exception as e:
+            logger.error(f"安装插件 {repo_url} 失败: {e}")
+            raise Exception(f"安装插件 {repo_url} 失败: {e}") from e
+        if not ok:
+            raise Exception(f"安装插件 {repo_url} 失败。")
+
+    async def uninstall_plugin(
+        self,
+        plugin_name: str,
+        delete_config: bool = False,
+        delete_data: bool = False,
+    ) -> None:
+        """卸载插件（对齐本体签名 uninstall_plugin(plugin_name, delete_config, delete_data)）。
+
+        配置/数据清理由宿主按 delete_config/delete_data 处理；bridge 未
+        提供细分参数时按原转发语义仅卸载插件本体。
+        """
         try:
             ok = await self._bridge().uninstall_plugin_async(plugin_name)
         except Exception as e:
@@ -250,6 +278,38 @@ class PluginManager:
             raise Exception(f"卸载插件 {plugin_name} 失败: {e}") from e
         if not ok:
             raise Exception(f"卸载插件 {plugin_name} 失败。")
+
+    async def install_plugin_from_file(
+        self, zip_file_path: str, ignore_version_check: bool = False
+    ) -> None:
+        """从本地 zip 安装插件（对齐本体签名）。
+
+        Go 宿主无插件子进程侧的 zip 安装 RPC（zip 安装由宿主 WebUI/
+        dashboard 安装 API 原生处理），SDK 侧保留签名并显式降级。
+        """
+        raise RuntimeError(
+            "install_plugin_from_file 由宿主安装链路原生处理"
+            "（WebUI 插件上传/安装 API），插件子进程侧不支持该操作。"
+        )
+
+    async def update_plugin(
+        self,
+        plugin_name: str,
+        proxy="",
+        download_url: str = "",
+        repo_url: str = "",
+    ) -> None:
+        """更新插件（对齐本体签名 update_plugin(plugin_name, proxy, download_url, repo_url)）。
+
+        更新流程由宿主原生执行；SDK 侧按本体签名保留参数并转发插件名。
+        """
+        try:
+            ok = await self._bridge().install_plugin_async(repo_url or plugin_name)
+        except Exception as e:
+            logger.error(f"更新插件 {plugin_name} 失败: {e}")
+            raise Exception(f"更新插件 {plugin_name} 失败: {e}") from e
+        if not ok:
+            raise Exception(f"更新插件 {plugin_name} 失败。")
 
     async def _get_registered_star(self, plugin_name: str) -> StarInfo | None:
         try:

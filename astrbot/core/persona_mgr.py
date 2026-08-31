@@ -168,3 +168,230 @@ class PersonaManager:
             if str(persona.get("name") or "") == persona_id:
                 return persona
         return None
+
+    # ── 以下方法对齐本体 PersonaManager 公开方法面 ─────────────────────────
+
+    @staticmethod
+    def _flatten_folders(folders: list[dict]) -> list[dict]:
+        """递归展平宿主返回的嵌套文件夹树（folders 含 children 子列表）。"""
+        out: list[dict] = []
+
+        def _walk(items: list[dict]) -> None:
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                out.append(item)
+                children = item.get("children")
+                if isinstance(children, list):
+                    _walk(children)
+
+        _walk(folders or [])
+        return out
+
+    async def get_persona(self, persona_id: str) -> Persona:
+        """获取指定 persona 的信息（对齐本体：不存在时抛 ValueError）。"""
+        for persona in self.personas:
+            if persona.persona_id == persona_id or persona.name == persona_id:
+                return persona
+        raise ValueError(f"Persona with ID {persona_id} does not exist.")
+
+    async def get_all_personas(self) -> list[Persona]:
+        """获取所有 personas（经宿主 get_personas RPC）。"""
+        return self.personas
+
+    async def get_personas_by_folder(self, folder_id: str | None = None) -> list[Persona]:
+        """获取指定文件夹中的 personas（folder_id 为 None 表示根目录）。"""
+        _folders, personas = await self._bridge().get_persona_tree_async()
+        out: list[Persona] = []
+        for item in personas or []:
+            if not isinstance(item, dict):
+                continue
+            item_folder = item.get("folder_id")
+            if folder_id is None:
+                if item_folder:
+                    continue
+            elif str(item_folder or "") != str(folder_id):
+                continue
+            out.append(Persona(item))
+        return out
+
+    async def get_folder(self, folder_id: str) -> dict | None:
+        """获取指定文件夹（对齐本体，返回 folder dict；未找到返回 None）。"""
+        folders, _personas = await self._bridge().get_persona_tree_async()
+        for folder in self._flatten_folders(folders or []):
+            if str(folder.get("folder_id") or "") == str(folder_id):
+                return folder
+        return None
+
+    async def get_folders(self, parent_id: str | None = None) -> list[dict]:
+        """获取文件夹列表（parent_id 为 None 表示根目录下的文件夹）。"""
+        folders, _personas = await self._bridge().get_persona_tree_async()
+        flat = self._flatten_folders(folders or [])
+        out: list[dict] = []
+        for folder in flat:
+            f_parent = folder.get("parent_id")
+            if parent_id is None:
+                if f_parent:
+                    continue
+            elif str(f_parent or "") != str(parent_id):
+                continue
+            out.append(folder)
+        return out
+
+    async def get_all_folders(self) -> list[dict]:
+        """获取所有文件夹（展平宿主树形结构）。"""
+        folders, _personas = await self._bridge().get_persona_tree_async()
+        return self._flatten_folders(folders or [])
+
+    async def create_persona(
+        self,
+        persona_id: str,
+        system_prompt: str,
+        begin_dialogs: list[str] | None = None,
+        tools: list[str] | None = None,
+        skills: list[str] | None = None,
+        custom_error_message: str | None = None,
+        folder_id: str | None = None,
+        sort_order: int = 0,
+    ) -> Persona:
+        """创建新的 persona（签名对齐本体）。
+
+        SDK 降级：宿主未向 Python 插件暴露人格写 RPC，人格管理请经
+        宿主 WebUI 完成。调用时抛出 RuntimeError 而非 AttributeError。
+        """
+        raise RuntimeError(
+            "SDK 不支持创建人格：人格数据由 Go 宿主维护，请使用宿主管理界面。"
+        )
+
+    async def delete_persona(self, persona_id: str) -> None:
+        """删除指定 persona（签名对齐本体，写操作由宿主处理）。
+
+        Raises:
+            RuntimeError: 宿主未暴露人格写 RPC。
+        """
+        raise RuntimeError(
+            "SDK 不支持删除人格：人格数据由 Go 宿主维护，请使用宿主管理界面。"
+        )
+
+    async def update_persona(
+        self,
+        persona_id: str,
+        system_prompt: str | None = None,
+        begin_dialogs: list[str] | None = None,
+        tools=None,
+        skills=None,
+        custom_error_message=None,
+    ) -> None:
+        """更新指定 persona 的信息（签名对齐本体，写操作由宿主处理）。
+
+        Raises:
+            RuntimeError: 宿主未暴露人格写 RPC。
+        """
+        raise RuntimeError(
+            "SDK 不支持更新人格：人格数据由 Go 宿主维护，请使用宿主管理界面。"
+        )
+
+    async def move_persona_to_folder(
+        self, persona_id: str, folder_id: str | None
+    ) -> None:
+        """移动 persona 到指定文件夹（签名对齐本体，写操作由宿主处理）。
+
+        Raises:
+            RuntimeError: 宿主未暴露人格写 RPC。
+        """
+        raise RuntimeError(
+            "SDK 不支持移动人格：人格数据由 Go 宿主维护，请使用宿主管理界面。"
+        )
+
+    async def create_folder(
+        self,
+        name: str,
+        parent_id: str | None = None,
+        description: str | None = None,
+        sort_order: int = 0,
+    ) -> dict:
+        """创建新的文件夹（签名对齐本体，写操作由宿主处理）。
+
+        Raises:
+            RuntimeError: 宿主未暴露人格写 RPC。
+        """
+        raise RuntimeError(
+            "SDK 不支持创建人格文件夹：人格数据由 Go 宿主维护，请使用宿主管理界面。"
+        )
+
+    async def update_folder(
+        self,
+        folder_id: str,
+        name: str | None = None,
+        parent_id=None,
+        description=None,
+        sort_order: int | None = None,
+    ) -> None:
+        """更新文件夹信息（签名对齐本体，写操作由宿主处理）。
+
+        Raises:
+            RuntimeError: 宿主未暴露人格写 RPC。
+        """
+        raise RuntimeError(
+            "SDK 不支持更新人格文件夹：人格数据由 Go 宿主维护，请使用宿主管理界面。"
+        )
+
+    async def delete_folder(self, folder_id: str) -> None:
+        """删除文件夹（签名对齐本体，写操作由宿主处理）。
+
+        Raises:
+            RuntimeError: 宿主未暴露人格写 RPC。
+        """
+        raise RuntimeError(
+            "SDK 不支持删除人格文件夹：人格数据由 Go 宿主维护，请使用宿主管理界面。"
+        )
+
+    async def batch_update_sort_order(self, items: list[dict]) -> None:
+        """批量更新排序顺序（签名对齐本体，写操作由宿主处理）。
+
+        Raises:
+            RuntimeError: 宿主未暴露人格写 RPC。
+        """
+        raise RuntimeError(
+            "SDK 不支持批量更新排序：人格数据由 Go 宿主维护，请使用宿主管理界面。"
+        )
+
+    def get_v3_persona_data(self) -> tuple[list[dict], list[dict], dict]:
+        """获取 AstrBot <4.0.0 版本的 persona 数据（对齐本体返回形状）。
+
+        Returns:
+            - list[dict]: persona 配置字典列表（prompt/name/begin_dialogs/...）。
+            - list[dict]: v3 人格列表。
+            - dict: 默认选中的人格。
+
+        SDK 降级：Personality 为 TypedDict（dict 形态），情景预设对话不做
+        _begin_dialogs_processed 转换（宿主数据无该维度时保持原样）。
+        """
+        v3_persona_config: list[dict] = []
+        for persona in self.personas:
+            v3_persona_config.append(
+                {
+                    "prompt": persona.system_prompt,
+                    "name": persona.persona_id,
+                    "begin_dialogs": persona.begin_dialogs or [],
+                    "mood_imitation_dialogs": [],
+                    "tools": persona.get("tools"),
+                    "skills": persona.get("skills"),
+                    "custom_error_message": persona.get("custom_error_message"),
+                }
+            )
+
+        personas_v3: list[dict] = []
+        selected_default: dict | None = None
+        for persona_cfg in v3_persona_config:
+            personas_v3.append(persona_cfg)
+            if persona_cfg["name"] == self.default_persona:
+                selected_default = persona_cfg
+
+        if not selected_default and personas_v3:
+            selected_default = personas_v3[0]
+        if not selected_default:
+            selected_default = {"name": "default", "prompt": "", "begin_dialogs": []}
+            personas_v3.append(selected_default)
+
+        return v3_persona_config, personas_v3, selected_default

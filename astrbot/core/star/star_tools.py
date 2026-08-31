@@ -115,16 +115,32 @@ class StarTools:
     ) -> None:
         """创建并提交事件到目标平台（对齐原版签名 create_event(abm, platform, is_wake)）。
 
-        Go 宿主兼容运行时：宿主无平台实例体系（平台实例在 Go 侧），无法构造
-        AstrMessageEvent 并提交——**降级：返回 None 并日志**，不再抛异常。
+        对齐原版行为：platform 在平台清单（context.platform_manager.get_insts，
+        宿主 ListPlatforms）中按实例 ID / 适配器名找不到时抛 ValueError（原版
+        docstring 声明的 Raises 语义）。
+
+        Go 宿主兼容运行时降级：宿主无事件注入 RPC（事件循环在宿主内运行），
+        即使平台存在也无法把事件提交进宿主管线——记录警告日志并返回 None。
+        需要主动触发 LLM 时请改用 context.send_message() 或消息管线。
 
         Args:
             abm: 待提交的消息对象（可先用 create_message 创建）。
-            platform: 平台 ID 或适配器名（原版默认 aiocqhttp，SDK 仅占位）。
+            platform: 平台 ID 或适配器名（原版默认 aiocqhttp）。
             is_wake: 是否为唤醒事件（SDK 仅占位）。
+
+        Raises:
+            ValueError: StarTools 未初始化，或平台不存在（对齐原版）。
         """
+        if cls._context is None:
+            raise ValueError("StarTools not initialized")
+        platforms = cls._context.platform_manager.get_insts()
+        adapter = next((p for p in platforms if p.meta().id == platform), None)
+        if adapter is None:
+            adapter = next((p for p in platforms if p.meta().name == platform), None)
+        if adapter is None:
+            raise ValueError(f"Platform not found: {platform}")
         logger.warning(
-            "create_event 未实现：Go 宿主无平台实例体系，事件未提交"
+            "create_event 降级：Go 宿主无事件注入 RPC，事件未提交"
             "（platform=%s, is_wake=%s）",
             platform,
             is_wake,
@@ -170,18 +186,20 @@ class StarTools:
         return await cls._context.deactivate_llm_tool_async(name)
 
     @classmethod
-    def register_llm_tool(cls, name: str, func_args: list, desc: str, handler) -> None:
-        """注册一个函数调用工具（转发 Context）。
+    def register_llm_tool(cls, name: str, func_args: list, desc: str, func_obj) -> None:
+        """注册一个函数调用工具（转发 Context，对齐本体参数名 func_obj）。
 
         Args:
             name: 工具名。
-            func_args: 函数参数定义。
+            func_args: 函数参数定义，格式为
+                [{"type": "string", "name": "arg_name", "description": "..."}, ...]。
             desc: 工具描述。
-            handler: 处理函数（须为异步）。
+            func_obj: 异步处理函数（本体参数名为 func_obj；插件以关键字
+                func_obj=... 调用时必须命中本参数名，否则 TypeError）。
         """
         if cls._context is None:
             raise ValueError("StarTools not initialized")
-        cls._context.register_llm_tool(name, func_args, desc, handler)
+        cls._context.register_llm_tool(name, func_args, desc, func_obj)
 
     @classmethod
     def unregister_llm_tool(cls, name: str) -> None:

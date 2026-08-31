@@ -1,17 +1,21 @@
 """消息工具（Go 宿主兼容运行时，对齐本体 tools/message_tools.py）。
 
 SDK 薄壳：`SendMessageToUserTool` / `GetGroupMessageHistoryTool` 的
-name / description / parameters（schema）与本体一致（宿主 agent 循环原生
-装配/执行），call 由宿主消息系统（SendMessage / 消息历史 RPC）执行，此处
-不重复实现。
+name / description / parameters（schema）与本体一致并经 ``builtin_tool``
+注册；agent 循环中 call 由宿主消息系统原生执行（internal/pipeline/
+message_tools.go executeSendMessage / executeGroupHistory），SDK 侧
+不重复实现（插件直接调用 call 会得到 FunctionTool.call 的
+NotImplementedError，真实调用路径是宿主工具循环）。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 from astrbot.core.agent.tool import FunctionTool
+from astrbot.core.tools.registry import builtin_tool
 
 
+@builtin_tool
 @dataclass
 class SendMessageToUserTool(FunctionTool):
     """向指定用户/会话主动发消息（宿主 SendMessage 原生执行）。"""
@@ -73,6 +77,13 @@ class SendMessageToUserTool(FunctionTool):
     )
 
 
+# 对齐本体 message_tools.py:365-367 的装饰器 config。
+_GROUP_MESSAGE_HISTORY_CONFIG = {
+    "provider_ltm_settings.group_message_history_enable": True,
+}
+
+
+@builtin_tool(config=_GROUP_MESSAGE_HISTORY_CONFIG)
 @dataclass
 class GetGroupMessageHistoryTool(FunctionTool):
     """读取群聊消息历史（宿主消息历史存储原生执行）。"""

@@ -2,20 +2,22 @@
 
 `MAIN_AGENT_HOOKS` 是本体的默认钩子实例：宿主 Agent 编排链在主 Agent
 前后调用已注册的事件钩子（on_agent_begin / on_agent_done /
-on_using_llm_tool / on_llm_tool_respond 等）。SDK 提供可实例化的薄壳，
-保证插件 import 与构造不报错；插件侧事件钩子经
-`register_on_agent_begin` 等装饰器在宿主跑，本类不直接触发宿主。
+on_using_llm_tool / on_llm_tool_respond 等）。SDK 提供可实例化的薄壳
+（泛型参数对齐本体 `BaseAgentRunHooks[AstrAgentContext]`），保证插件
+import 与构造不报错；插件侧事件钩子经 `register_on_agent_begin` 等装饰器
+在宿主跑，本类不直接触发宿主。
 """
 from __future__ import annotations
 
 from astrbot.core.agent.hooks import BaseAgentRunHooks
+from astrbot.core.astr_agent_context import AstrAgentContext
 
 
-class MainAgentHooks(BaseAgentRunHooks):
+class MainAgentHooks(BaseAgentRunHooks[AstrAgentContext]):
     """主 Agent 默认钩子（SDK 薄壳：全部 no-op，宿主编排链触发事件钩子）。"""
 
 
-class EmptyAgentHooks(BaseAgentRunHooks):
+class EmptyAgentHooks(BaseAgentRunHooks[AstrAgentContext]):
     """空钩子（对齐本体 EmptyAgentHooks）。"""
 
 

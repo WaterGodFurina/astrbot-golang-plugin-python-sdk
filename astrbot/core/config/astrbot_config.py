@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import enum
 import json
 import logging
 import os
@@ -21,16 +22,29 @@ _HOST_BRIDGE: Any = None
 _PLUGIN_NAME: str = ""
 
 
+def get_astrbot_data_path() -> str:
+    """返回 AstrBot 数据目录（由宿主注入 ASTRBOT_DATA_PATH，缺省为 cwd）。"""
+    return os.environ.get("ASTRBOT_DATA_PATH", os.getcwd())
+
+
+# 主配置文件路径（对齐本体 astrbot.core.config.astrbot_config.ASTRBOT_CONFIG_PATH）
+ASTRBOT_CONFIG_PATH = os.path.join(get_astrbot_data_path(), "cmd_config.json")
+DASHBOARD_INITIAL_PASSWORD_ENV = "ASTRBOT_DASHBOARD_INITIAL_PASSWORD"
+DASHBOARD_RESET_PASSWORD_ENV = "ASTRBOT_RESET_DASHBOARD_PASSWORD"
+
+
+class RateLimitStrategy(enum.Enum):
+    """速率限制策略（对齐本体 astrbot.core.config.astrbot_config.RateLimitStrategy）。"""
+
+    STALL = "stall"
+    DISCARD = "discard"
+
+
 def bind_host(bridge, plugin_name: str = "") -> None:
     """绑定宿主桥（模块级回退，供非 Context 路径构造的配置对象 save 使用）。"""
     global _HOST_BRIDGE, _PLUGIN_NAME
     _HOST_BRIDGE = bridge
     _PLUGIN_NAME = plugin_name or ""
-
-
-def get_astrbot_data_path() -> str:
-    """返回 AstrBot 数据目录（由宿主注入 ASTRBOT_DATA_PATH，缺省为 cwd）。"""
-    return os.environ.get("ASTRBOT_DATA_PATH", os.getcwd())
 
 
 def _atomic_write_json(path: str, data: dict) -> None:
@@ -57,32 +71,82 @@ class AstrBotConfig(dict):
     `_bridge` / `_plugin_name` 注入（Context.get_config 创建时绑定），
     无桥时回退到本地 JSON 文件写入。
 
+    构造签名对齐本体 ``(config_path, default_config, schema)``：
+    位置参数按类型识别（str → config_path，dict → default_config），
+    关键字参数 config_path / default_config / schema 与本体同名同义。
     schema 属性对齐本体存储插件配置的 JSON Schema（构造时从宿主
     配置读入），插件可在运行时更新 options/labels（如 update_manager
     的插件列表下拉），宿主配置对话框实时拉取。
     """
 
-    def __init__(self, *args, schema: dict | None = None, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        # 关键的实例属性存入 __dict__，避免被当作配置项写回宿主。
-        object.__setattr__(self, "schema", schema)
-        if schema is not None:
-            defaults = self._config_schema_to_default_config(schema)
-            for k, v in defaults.items():
-                self.setdefault(k, v)
+    def __init__(
+        self,
+        *args,
+        config_path: str | None = None,
+        default_config: dict | None = None,
+        schema: dict | None = None,
+        **kwargs,
+    ) -> None:
+        # 本体签名 (config_path, default_config, schema) 的位置参数兼容：
+        # str → config_path，dict → default_config，第三个 dict → schema。
+        pos_config_path: str | None = None
+        pos_default_config: dict | None = None
+        pos_schema: dict | None = None
+        rest = list(args)
+        if rest and isinstance(rest[0], str):
+            pos_config_path = rest.pop(0)
+        if rest and isinstance(rest[0], dict):
+            pos_default_config = rest.pop(0)
+        if rest and isinstance(rest[0], dict):
+            pos_schema = rest.pop(0)
+        # 剩余位置参数宽松忽略（本体无此形态，不抛错以免插件炸）
+
+        eff_config_path = config_path if config_path is not None else pos_config_path
+        eff_default_config = (
+            default_config if default_config is not None else pos_default_config
+        )
+        eff_schema = schema if schema is not None else pos_schema
+
+        super().__init__(**kwargs)
+
+        # 关键的实例属性存入 __dict__（object.__setattr__），避免被当作
+        # 配置项写回宿主（对齐本体同款做法）。
+        object.__setattr__(
+            self,
+            "config_path",
+            eff_config_path if eff_config_path is not None else ASTRBOT_CONFIG_PATH,
+        )
+        object.__setattr__(self, "schema", eff_schema)
+        object.__setattr__(self, "default_config", eff_default_config)
+        object.__setattr__(self, "_save_state_lock", threading.Lock())
+
+        if eff_schema is not None:
+            # schema 解析出的默认值先入底（对齐本体"schema 生成默认配置"），
+            # 随后 default_config / 位置 dict 携带的真实配置值覆盖默认值
+            # （对齐本体"文件值覆盖 schema 默认"；Context.get_config 场景
+            # 传入的宿主配置 data 即真实值，不得丢失）。
+            schema_defaults = self._config_schema_to_default_config(eff_schema)
+            self.update(schema_defaults)
+        if eff_default_config is not None:
+            self.update(eff_default_config)
+
+        # 显式传入 config_path 且文件存在时读入（对齐本体构造时读文件行为；
+        # 未显式传路径时不读 cmd_config.json——宿主运行时配置由宿主下发）。
+        if config_path is not None or pos_config_path is not None:
+            if os.path.exists(self.config_path):
+                with open(self.config_path, encoding="utf-8-sig") as f:
+                    conf_str = f.read()
+                if conf_str.startswith("\ufeff"):
+                    conf_str = conf_str[1:]
+                conf = json.loads(conf_str)
+                if isinstance(conf, dict):
+                    self.update(conf)
 
     @staticmethod
     def _config_schema_to_default_config(schema: dict) -> dict:
         """将 Schema 转换成默认配置（对齐 Python 本体 astrbot_config）。"""
-        DEFAULT_VALUE_MAP = {
-            "string": "",
-            "float": 0.0,
-            "int": 0,
-            "bool": False,
-            "list": [],
-            "object": {},
-            "template_list": [],
-        }
+        from astrbot.core.config.default import DEFAULT_VALUE_MAP
+
         conf: dict = {}
 
         def _parse(schema: dict, conf: dict) -> None:
@@ -90,10 +154,14 @@ class AstrBotConfig(dict):
                 if not isinstance(v, dict):
                     continue
                 vtype = v.get("type", "string")
+                if vtype not in DEFAULT_VALUE_MAP:
+                    raise TypeError(
+                        f"不受支持的配置类型 {vtype}。支持的类型有：{list(DEFAULT_VALUE_MAP.keys())}",
+                    )
                 if "default" in v:
                     default = v["default"]
                 else:
-                    default = DEFAULT_VALUE_MAP.get(vtype, "")
+                    default = DEFAULT_VALUE_MAP[vtype]
                 if vtype == "object":
                     conf[k] = {}
                     _parse(v.get("items") or {}, conf[k])
@@ -124,11 +192,90 @@ class AstrBotConfig(dict):
         self[key] = value
 
     def __delattr__(self, key) -> None:
-        if key in self:
+        # 对齐本体：删除配置项后立即 save_config；缺项抛 AttributeError。
+        try:
             del self[key]
+        except KeyError:
+            raise AttributeError(f"没有找到 Key: '{key}'")
+        self.save_config()
 
     def get(self, key: str, default=None):
         return super().get(key, default)
+
+    def check_exist(self) -> bool:
+        """配置文件是否存在（对齐本体 AstrBotConfig.check_exist）。"""
+        if not self.config_path:  # 加判空
+            return False
+        return os.path.exists(self.config_path)
+
+    def check_config_integrity(self, refer_conf: dict, conf: dict, path=""):
+        """检查配置完整性（对齐本体同名方法）。
+
+        按 refer_conf 的顺序重建 conf：缺失项补默认值、None 项用默认值、
+        子 dict 递归检查、多余项剔除、顺序不一致重排；有任何变更返回 True。
+        """
+        has_new = False
+
+        # 创建一个新的有序字典以保持参考配置的顺序
+        new_conf = {}
+
+        # 先按照参考配置的顺序添加配置项
+        for key, value in refer_conf.items():
+            if key not in conf:
+                # 配置项不存在，插入默认值
+                path_ = path + "." + key if path else key
+                logger.info("Config key missing; added default.")
+                new_conf[key] = value
+                has_new = True
+            elif conf[key] is None:
+                # 配置项为 None，使用默认值
+                new_conf[key] = value
+                has_new = True
+            elif isinstance(value, dict):
+                # 递归检查子配置项
+                if not isinstance(conf[key], dict):
+                    # 类型不匹配，使用默认值
+                    new_conf[key] = value
+                    has_new = True
+                else:
+                    # 递归检查并同步顺序
+                    child_has_new = self.check_config_integrity(
+                        value,
+                        conf[key],
+                        path + "." + key if path else key,
+                    )
+                    new_conf[key] = conf[key]
+                    has_new |= child_has_new
+            else:
+                # 直接使用现有配置
+                new_conf[key] = conf[key]
+
+        # 检查是否存在参考配置中没有的配置项
+        for key in list(conf.keys()):
+            if key not in refer_conf:
+                path_ = path + "." + key if path else key
+                logger.info("Config key removed: %s", path_)
+                has_new = True
+
+        # 顺序不一致也算作变更
+        if list(conf.keys()) != list(new_conf.keys()):
+            if path:
+                logger.info("Config key order fixed: %s", path)
+            else:
+                logger.info("Config key order fixed")
+            has_new = True
+
+        # 更新原始配置
+        conf.clear()
+        conf.update(new_conf)
+
+        return has_new
+
+    @staticmethod
+    def _consume_reset_dashboard_password_flag() -> bool:
+        """兼容占位（本体用于 dashboard 密码重置，宿主运行时无此逻辑）。"""
+        raw_value = os.environ.pop(DASHBOARD_RESET_PASSWORD_ENV, "")
+        return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
     @staticmethod
     def _safe_namespace(namespace: str) -> str:
