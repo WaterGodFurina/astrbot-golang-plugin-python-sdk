@@ -23,3 +23,7 @@ jobs:
         run: python tests/run_tests.py
       - name: Run full RPC coverage tests
         run: python tests/test_all_rpcs.py
+      - name: Bench all RPCs
+        run: |
+          python tests/bench_rpcs.py --iters 100 --output rpc_bench.md
+          cat rpc_bench.md >> $GITHUB_STEP_SUMMARY
