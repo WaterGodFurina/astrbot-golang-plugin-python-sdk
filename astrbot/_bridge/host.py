@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import threading
+from typing import Any
 
 import grpc
 
@@ -837,6 +838,323 @@ class HostBridge:
             logger.warning(f"DeleteSkill({name}) 失败: {e}")
             return False
 
+    def list_skills_v2(
+        self,
+        active_only: bool = False,
+        runtime: str = "",
+        show_sandbox_path: bool = False,
+    ) -> list[dict]:
+        """带过滤参数的技能列表（ListSkillsV2，宿主 sandbox 视图）。
+
+        runtime 取值 "local"/"sandbox"/""=全部；show_sandbox_path=True 时
+        技能 JSON 的 path 字段返回 sandbox 路径而非宿主本地路径。宿主旧版
+        无该 RPC（UNIMPLEMENTED）→ 返回 []，调用方回退 list_skills。
+        """
+        if not self.ensure_connected():
+            return []
+        try:
+            resp = self._stub.ListSkillsV2(
+                plugin_pb2.ListSkillsV2Request(
+                    active_only=bool(active_only),
+                    runtime=str(runtime or ""),
+                    show_sandbox_path=bool(show_sandbox_path),
+                ),
+                timeout=30,
+            )
+        except Exception as e:
+            logger.debug(f"ListSkillsV2 失败（宿主可能不支持）: {e}")
+            return []
+        out: list[dict] = []
+        for raw in resp.skills_json:
+            try:
+                data = json.loads(raw)
+            except Exception:
+                continue
+            if isinstance(data, dict):
+                out.append(data)
+        return out
+
+    # ── 知识库（宿主 internal/knowledgebase）────────────────────────────
+    def kb_retrieve(
+        self,
+        query: str,
+        kb_names: list[str] | None = None,
+        top_k_fusion: int = 20,
+        top_m_final: int = 5,
+    ) -> dict | None:
+        """检索宿主知识库，返回 {"context_text": str, "results": list[dict]}。
+
+        kb_names 空 = 宿主全部启用中的知识库；top_k_fusion/top_m_final
+        <=0 用宿主默认。results 为检索结果 dict 列表（结构以宿主为准）。
+        桥接未就绪 / 宿主不支持该 RPC / RPC 失败时返回 None（调用方按
+        本体语义降级，不抛异常）。
+        """
+        if not self.ensure_connected():
+            return None
+        try:
+            resp = self._stub.KBRetrieve(
+                plugin_pb2.KBRetrieveRequest(
+                    query=query,
+                    kb_names=[str(n) for n in (kb_names or []) if str(n)],
+                    top_k_fusion=int(top_k_fusion),
+                    top_m_final=int(top_m_final),
+                ),
+                timeout=60,
+            )
+        except Exception as e:
+            logger.debug(f"KBRetrieve 失败（宿主可能不支持）: {e}")
+            return None
+        results: list[dict] = []
+        if resp.results_json:
+            try:
+                data = json.loads(resp.results_json)
+            except Exception as e:
+                logger.debug(f"KBRetrieve results_json 解析失败: {e}")
+                data = []
+            if isinstance(data, list):
+                results = [r for r in data if isinstance(r, dict)]
+        return {"context_text": resp.context_text, "results": results}
+
+    def kb_upload_from_url(
+        self,
+        kb_id: str,
+        url: str,
+        chunk_size: int = 512,
+        chunk_overlap: int = 50,
+    ) -> bool:
+        """让宿主从 URL 拉取文档写入指定知识库并分块。
+
+        chunk_size/chunk_overlap <=0 用宿主默认。失败（宿主不支持 / 桥
+        未就绪 / RPC 错误）返回 False。
+        """
+        if not self.ensure_connected():
+            return False
+        try:
+            self._stub.KBUploadFromURL(
+                plugin_pb2.KBUploadFromURLRequest(
+                    kb_id=kb_id,
+                    url=url,
+                    chunk_size=int(chunk_size),
+                    chunk_overlap=int(chunk_overlap),
+                ),
+                timeout=300,
+            )
+            return True
+        except Exception as e:
+            logger.debug(f"KBUploadFromURL 失败（宿主可能不支持）: {e}")
+            return False
+
+    def kb_list_kbs(self) -> list[dict]:
+        """列出宿主全部知识库元数据（每项 KnowledgeBase 结构 JSON dict）。"""
+        if not self.ensure_connected():
+            return []
+        try:
+            resp = self._stub.KBListKBs(plugin_pb2.Empty(), timeout=30)
+        except Exception as e:
+            logger.debug(f"KBListKBs 失败（宿主可能不支持）: {e}")
+            return []
+        out: list[dict] = []
+        for raw in resp.kbs_json:
+            try:
+                data = json.loads(raw)
+            except Exception:
+                continue
+            if isinstance(data, dict):
+                out.append(data)
+        return out
+
+    # ── 文件令牌（宿主 file_token 文件服务）────────────────────────────
+    def register_file_token(self, path: str, timeout_sec: int = 0) -> str:
+        """把宿主侧文件路径登记为一次性令牌（timeout_sec=0 用宿主默认 TTL）。
+
+        返回 token（下游凭 token 读取文件，避免暴露真实路径）；失败（宿主
+        不支持 / 桥未就绪 / RPC 错误）返回 ""。
+        """
+        if not self.ensure_connected():
+            return ""
+        try:
+            resp = self._stub.RegisterFileToken(
+                plugin_pb2.RegisterFileTokenRequest(
+                    path=str(path),
+                    timeout_sec=int(timeout_sec or 0),
+                ),
+                timeout=30,
+            )
+            return resp.token
+        except Exception as e:
+            logger.debug(f"RegisterFileToken 失败（宿主可能不支持）: {e}")
+            return ""
+
+    # ── 插件定时任务（宿主 internal/cron）──────────────────────────────
+    def cron_create(
+        self,
+        name: str,
+        job_type: str = "cron",
+        cron_expression: str = "",
+        timezone: str = "",
+        payload: dict | None = None,
+        description: str = "",
+        enabled: bool = True,
+        run_once: bool = False,
+        run_at: str = "",
+    ) -> dict:
+        """创建宿主定时任务，返回宿主 Job 快照 dict（job_id/name/job_type/
+        cron_expression/payload/enabled/next_run_time/...）。
+
+        run_once=True 时 run_at（RFC3339）指定一次性触发时间。失败返回 {}。
+        """
+        if not self.ensure_connected():
+            return {}
+        try:
+            resp = self._stub.CronCreate(
+                plugin_pb2.CronCreateRequest(
+                    name=name,
+                    job_type=str(job_type or "cron"),
+                    cron_expression=str(cron_expression or ""),
+                    timezone=str(timezone or ""),
+                    payload_json=json.dumps(payload or {}, ensure_ascii=False).encode(),
+                    description=str(description or ""),
+                    enabled=bool(enabled),
+                    run_once=bool(run_once),
+                    run_at=str(run_at or ""),
+                ),
+                timeout=30,
+            )
+        except Exception as e:
+            logger.debug(f"CronCreate 失败（宿主可能不支持）: {e}")
+            return {}
+        if not resp.job_json:
+            return {}
+        try:
+            data = json.loads(resp.job_json)
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def cron_update(self, job_id: str, fields: dict) -> dict:
+        """按 job_id 部分更新宿主任务（fields 指定更新字段集），返回 Job
+        快照 dict；失败返回 {}。"""
+        if not self.ensure_connected():
+            return {}
+        try:
+            resp = self._stub.CronUpdate(
+                plugin_pb2.CronUpdateRequest(
+                    job_id=str(job_id or ""),
+                    fields_json=json.dumps(fields or {}, ensure_ascii=False).encode(),
+                ),
+                timeout=30,
+            )
+        except Exception as e:
+            logger.debug(f"CronUpdate({job_id}) 失败（宿主可能不支持）: {e}")
+            return {}
+        if not resp.job_json:
+            return {}
+        try:
+            data = json.loads(resp.job_json)
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def cron_delete(self, job_id: str) -> bool:
+        """删除指定定时任务。失败返回 False。"""
+        if not self.ensure_connected():
+            return False
+        try:
+            self._stub.CronDelete(
+                plugin_pb2.CronDeleteRequest(job_id=str(job_id or "")),
+                timeout=30,
+            )
+            return True
+        except Exception as e:
+            logger.debug(f"CronDelete({job_id}) 失败（宿主可能不支持）: {e}")
+            return False
+
+    def cron_list(self, job_type: str = "") -> list[dict]:
+        """列出定时任务（job_type 空 = 全部类型），每项为 Job 快照 dict。"""
+        if not self.ensure_connected():
+            return []
+        try:
+            resp = self._stub.CronList(
+                plugin_pb2.CronListRequest(job_type=str(job_type or "")),
+                timeout=30,
+            )
+        except Exception as e:
+            logger.debug(f"CronList 失败（宿主可能不支持）: {e}")
+            return []
+        out: list[dict] = []
+        for raw in resp.jobs_json:
+            try:
+                data = json.loads(raw)
+            except Exception:
+                continue
+            if isinstance(data, dict):
+                out.append(data)
+        return out
+
+    def cron_run_now(self, job_id: str) -> bool:
+        """立即触发一次指定任务。失败返回 False。"""
+        if not self.ensure_connected():
+            return False
+        try:
+            self._stub.CronRunNow(
+                plugin_pb2.CronRunNowRequest(job_id=str(job_id or "")),
+                timeout=30,
+            )
+            return True
+        except Exception as e:
+            logger.debug(f"CronRunNow({job_id}) 失败（宿主可能不支持）: {e}")
+            return False
+
+    # ── 宿主 MCP 读写桥接（只读列出 + 调用宿主侧 MCP 工具）─────────────
+    def mcp_list_tools(self) -> list[dict]:
+        """列出宿主已连接 MCP server 的全部工具（每项 {server, name,
+        description, schema_json} dict）。宿主不支持时返回 []。"""
+        if not self.ensure_connected():
+            return []
+        try:
+            resp = self._stub.McpListTools(plugin_pb2.Empty(), timeout=30)
+        except Exception as e:
+            logger.debug(f"McpListTools 失败（宿主可能不支持）: {e}")
+            return []
+        out: list[dict] = []
+        for raw in resp.tools_json:
+            try:
+                data = json.loads(raw)
+            except Exception:
+                continue
+            if isinstance(data, dict):
+                out.append(data)
+        return out
+
+    def mcp_call_tool(
+        self, server: str, tool_name: str, arguments: dict | None = None
+    ) -> dict:
+        """调用宿主侧 MCP 工具，返回 {"result": any, "is_error": bool,
+        "text": str}。桥接未就绪 / RPC 失败时 is_error=True。"""
+        if not self.ensure_connected():
+            return {"result": None, "is_error": True, "text": "宿主桥未就绪"}
+        try:
+            resp = self._stub.McpCallTool(
+                plugin_pb2.McpCallToolRequest(
+                    server=str(server or ""),
+                    tool_name=str(tool_name or ""),
+                    arguments_json=json.dumps(
+                        arguments or {}, ensure_ascii=False
+                    ).encode(),
+                ),
+                timeout=120,
+            )
+        except Exception as e:
+            logger.debug(f"McpCallTool({server}.{tool_name}) 失败: {e}")
+            return {"result": None, "is_error": True, "text": str(e)}
+        result: Any = None
+        if resp.result_json:
+            try:
+                result = json.loads(resp.result_json)
+            except Exception:
+                result = None
+        return {"result": result, "is_error": bool(resp.is_error), "text": resp.text}
+
     # ── 平台消息历史（宿主 db platform_message_history）─────────────
     def get_platform_message_history(
         self, platform_id: str, user_id: str, limit: int = 200
@@ -1199,6 +1517,102 @@ class HostBridge:
 
     async def uninstall_plugin_async(self, plugin_name: str) -> bool:
         return await asyncio.to_thread(self.uninstall_plugin, plugin_name)
+
+    # ── 技能 V2 / 知识库 / 文件令牌 / 定时任务 / MCP async ─────────────────
+    async def list_skills_v2_async(
+        self,
+        active_only: bool = False,
+        runtime: str = "",
+        show_sandbox_path: bool = False,
+    ) -> list[dict]:
+        """真异步 list_skills_v2（asyncio.to_thread 包装）。"""
+        return await asyncio.to_thread(
+            self.list_skills_v2, active_only, runtime, show_sandbox_path
+        )
+
+    async def kb_retrieve_async(
+        self,
+        query: str,
+        kb_names: list[str] | None = None,
+        top_k_fusion: int = 20,
+        top_m_final: int = 5,
+    ) -> dict | None:
+        """真异步 kb_retrieve（检索可能较慢，绝不阻塞常驻 loop）。"""
+        return await asyncio.to_thread(
+            self.kb_retrieve, query, kb_names, top_k_fusion, top_m_final
+        )
+
+    async def kb_upload_from_url_async(
+        self,
+        kb_id: str,
+        url: str,
+        chunk_size: int = 512,
+        chunk_overlap: int = 50,
+    ) -> bool:
+        """真异步 kb_upload_from_url（宿主拉取/分块可能长达数十秒）。"""
+        return await asyncio.to_thread(
+            self.kb_upload_from_url, kb_id, url, chunk_size, chunk_overlap
+        )
+
+    async def kb_list_kbs_async(self) -> list[dict]:
+        """真异步 kb_list_kbs（asyncio.to_thread 包装）。"""
+        return await asyncio.to_thread(self.kb_list_kbs)
+
+    async def register_file_token_async(self, path: str, timeout_sec: int = 0) -> str:
+        """真异步 register_file_token（asyncio.to_thread 包装）。"""
+        return await asyncio.to_thread(self.register_file_token, path, timeout_sec)
+
+    async def cron_create_async(
+        self,
+        name: str,
+        job_type: str = "cron",
+        cron_expression: str = "",
+        timezone: str = "",
+        payload: dict | None = None,
+        description: str = "",
+        enabled: bool = True,
+        run_once: bool = False,
+        run_at: str = "",
+    ) -> dict:
+        """真异步 cron_create（asyncio.to_thread 包装）。"""
+        return await asyncio.to_thread(
+            self.cron_create,
+            name,
+            job_type,
+            cron_expression,
+            timezone,
+            payload,
+            description,
+            enabled,
+            run_once,
+            run_at,
+        )
+
+    async def cron_update_async(self, job_id: str, fields: dict) -> dict:
+        """真异步 cron_update（asyncio.to_thread 包装）。"""
+        return await asyncio.to_thread(self.cron_update, job_id, fields)
+
+    async def cron_delete_async(self, job_id: str) -> bool:
+        """真异步 cron_delete（asyncio.to_thread 包装）。"""
+        return await asyncio.to_thread(self.cron_delete, job_id)
+
+    async def cron_list_async(self, job_type: str = "") -> list[dict]:
+        """真异步 cron_list（asyncio.to_thread 包装）。"""
+        return await asyncio.to_thread(self.cron_list, job_type)
+
+    async def cron_run_now_async(self, job_id: str) -> bool:
+        """真异步 cron_run_now（asyncio.to_thread 包装）。"""
+        return await asyncio.to_thread(self.cron_run_now, job_id)
+
+    async def mcp_list_tools_async(self) -> list[dict]:
+        """真异步 mcp_list_tools（asyncio.to_thread 包装）。"""
+        return await asyncio.to_thread(self.mcp_list_tools)
+
+    async def mcp_call_tool_async(
+        self, server: str, tool_name: str, arguments: dict | None = None
+    ) -> dict:
+        """真异步 mcp_call_tool（工具调用可能耗时，绝不阻塞常驻 loop）。"""
+        return await asyncio.to_thread(self.mcp_call_tool, server, tool_name, arguments)
 
 
 _bridge: HostBridge | None = None

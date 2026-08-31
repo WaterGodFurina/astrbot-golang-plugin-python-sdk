@@ -1,16 +1,30 @@
 """定时任务管理器（Go 宿主兼容运行时，对齐本体 core.cron.manager 公开面）。
 
-Go 宿主没有插件侧 cron RPC，因此 .scheduler 直接暴露一个 apscheduler 的
-AsyncIOScheduler（与 Python 本体 CronJobManager 一致）；若运行环境未安装
-apscheduler，则降级为内置的最小调度器（线程 + 简化 cron/interval 触发），
-保证插件 `context.cron_manager.scheduler` 的 add_job / get_job /
-remove_job 路径永不 AttributeError。
+任务优先转发宿主：add_basic_job / add_active_job / update_job / delete_job /
+list_jobs / run_job_now / get_next_run_time 经 HostBridge 的 cron RPC
+（CronCreate / CronUpdate / CronDelete / CronList / CronRunNow）转发宿主
+internal/cron（同步 RPC 经 asyncio.to_thread 移出常驻 loop），任务快照
+dict 字段对齐宿主 Job JSON（job_id/name/job_type/cron_expression/payload/
+enabled/next_run_time/...）。宿主不可用 / bridge 无该 RPC 时优雅回退本地
+调度器实现（保留！本地调度器是宿主不可用时的兜底）。
+
+宿主触发回推：basic 任务到点时宿主经 PluginService.FeedCronJob 把触发推送
+回插件进程，dispatch.FeedCronJob 调用模块级 feed_cron_job 按 job_id 匹配
+宿主转发记录（_host_jobs，handler 保存在本地 _basic_handlers）并调度执行
+（async handler 派发常驻 loop / 同步 handler 派发独立线程），无匹配返回
+handled=False。
+
+本地兜底路径：.scheduler 直接暴露一个 apscheduler 的 AsyncIOScheduler
+（与 Python 本体 CronJobManager 一致）；若运行环境未安装 apscheduler，则
+降级为内置的最小调度器（线程 + 简化 cron/interval 触发），保证插件
+`context.cron_manager.scheduler` 的 add_job / get_job / remove_job 路径
+永不 AttributeError。
 
 同时对齐本体 `astrbot.core.cron.manager.CronJobManager` 的公开方法面
 （add_basic_job / add_active_job / update_job / delete_job / list_jobs /
 get_next_run_time / run_job_now / sync_from_db / CronJobSchedulingError）：
-SDK 运行时无数据库与主 agent 唤醒能力，任务记录保存在本进程内存
-（_CronJobRecord），active_agent 任务触发时仅记录日志。
+SDK 运行时无数据库，本地兜底任务记录保存在本进程内存（_CronJobRecord），
+active_agent 任务本地触发时仅记录日志。
 """
 from __future__ import annotations
 
@@ -31,6 +45,44 @@ logger = logging.getLogger("astrbot")
 
 class CronJobSchedulingError(Exception):
     """定时任务登记失败时抛出（对齐本体 CronJobSchedulingError）。"""
+
+
+# 进程内 CronJobManager 单例（每个插件进程只有一个 Context → 一个管理器，
+# __init__ 时登记；dispatch.FeedCronJob 经模块级 feed_cron_job 访问，对齐
+# session_waiter 以模块级状态被 dispatch 调用的模式）。
+_manager: "CronJobManager | None" = None
+
+# 宿主 FeedCronJob 派发的在途 future 集合：asyncio 文档要求保留引用防 GC
+# （派发为 fire-and-forget，异常经 done 回收，避免 never-retrieved 告警）。
+_feed_futures: set = set()
+
+
+def _get_manager() -> "CronJobManager | None":
+    """返回进程内 CronJobManager 单例（未初始化返回 None）。"""
+    return _manager
+
+
+def feed_cron_job(
+    job_id: str,
+    job_name: str = "",
+    payload: dict | None = None,
+    run_at: str = "",
+) -> bool:
+    """宿主 cron 到点触发插件的 basic 任务（FeedCronJob RPC 本地喂入入口）。
+
+    按 job_id 匹配宿主转发的任务记录（_host_jobs，add_basic_job 转发宿主时
+    handler 已保存在本地 _basic_handlers）：有匹配 handler 则调度执行并返回
+    True；无匹配（未登记/热重载丢失）返回 False（宿主侧语义对齐
+    FeedSessionWait 的 handled=False）。触发参数对齐本体 _run_basic_job：
+    handler(**payload)（用户 payload 原样，宿主注入的 _plugin_id 路由键在
+    触发时剥离）；payload 为空时 handler() 无参调用。
+    """
+    if _manager is None:
+        logger.warning(
+            f"feed_cron_job: cron_manager 尚未初始化，任务 {job_id}({job_name!r}) 无法喂入"
+        )
+        return False
+    return _manager.feed_cron_job(job_id, job_name, payload, run_at)
 
 
 @dataclass
@@ -306,6 +358,13 @@ class CronJobManager:
         self.scheduler = self._create_scheduler()
         self._basic_handlers: dict[str, Callable[..., Any]] = {}
         self._jobs: dict[str, _CronJobRecord] = {}
+        # 宿主侧管理的 job_id 集合（经 cron_* RPC 创建/发现的任务）：
+        # 这些任务由宿主 internal/cron 调度，本进程不做本地调度。
+        self._host_jobs: set[str] = set()
+        # 登记为进程内单例：dispatch.FeedCronJob 经模块级 feed_cron_job
+        # 按 job_id 路由宿主触发的 basic 任务（见模块 docstring 注释）。
+        global _manager
+        _manager = self
 
     def _create_scheduler(self):
         """创建调度器：优先 AsyncIOScheduler，失败则降级为最小调度器。"""
@@ -337,6 +396,114 @@ class CronJobManager:
         except Exception as e:
             logger.warning(f"cron_manager shutdown 失败: {e}")
 
+    # ── 宿主 cron RPC 转发（宿主不可用时回退本地调度器）────────────────
+    def _host_bridge(self):
+        """获取可用宿主桥（不可用返回 None，调用方走本地兜底）。"""
+        try:
+            from astrbot.core.star.context import get_host_bridge
+
+            bridge = get_host_bridge()
+        except Exception:
+            return None
+        if bridge is None:
+            return None
+        ensure = getattr(bridge, "ensure_connected", None)
+        if ensure is None:
+            return bridge
+        try:
+            if not ensure():
+                return None
+        except Exception:
+            return None
+        return bridge
+
+    async def _host_call(self, method: str, *args: Any, **kwargs: Any):
+        """经 asyncio.to_thread 调用宿主 bridge 的 cron_* 方法。
+
+        返回 (True, result)；宿主不可用 / bridge 未提供该方法 / 调用异常
+        返回 (False, None)（调用方回退本地调度器，不抛异常）。
+        """
+        bridge = self._host_bridge()
+        if bridge is None:
+            return False, None
+        fn = getattr(bridge, method, None)
+        if fn is None:
+            logger.debug(f"宿主 bridge 未提供 {method}，回退本地调度器")
+            return False, None
+        try:
+            return True, await asyncio.to_thread(fn, *args, **kwargs)
+        except Exception as e:
+            logger.debug(f"宿主 {method} 转发失败（回退本地调度器）: {e}")
+            return False, None
+
+    @staticmethod
+    def _parse_host_dt(value: Any) -> datetime | None:
+        """把宿主 Job JSON 的时间字段（RFC3339 字符串 / Unix 秒数）解析为
+        UTC 感知 datetime；无法解析返回 None。"""
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            try:
+                return datetime.fromtimestamp(float(value), tz=timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                return None
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    @staticmethod
+    def _rfc3339(dt: datetime | None) -> str:
+        """datetime → RFC3339 字符串（naive 视为 UTC；None → ""）。"""
+        if dt is None:
+            return ""
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat()
+
+    @classmethod
+    def _record_from_host_job(cls, job: Any) -> "_CronJobRecord | None":
+        """把宿主 Job 快照 JSON dict 还原为 _CronJobRecord。
+
+        字段对齐宿主 Job JSON（job_id/name/job_type/cron_expression/
+        payload/enabled/next_run_time/...）；缺省字段取 _CronJobRecord
+        默认值，无 job_id 视为无效条目。
+        """
+        if not isinstance(job, dict):
+            return None
+        job_id = str(job.get("job_id") or job.get("id") or "")
+        if not job_id:
+            return None
+        payload = job.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+        return _CronJobRecord(
+            job_id=job_id,
+            name=str(job.get("name") or ""),
+            job_type=str(job.get("job_type") or "basic"),
+            cron_expression=job.get("cron_expression") or None,
+            timezone=job.get("timezone") or None,
+            payload=payload,
+            description=job.get("description") or None,
+            enabled=bool(job.get("enabled", True)),
+            persistent=bool(job.get("persistent", False)),
+            run_once=bool(job.get("run_once", False)),
+            run_at=cls._parse_host_dt(job.get("run_at")),
+            next_run_time=cls._parse_host_dt(job.get("next_run_time")),
+            status=str(job.get("status") or "pending"),
+            last_run_at=cls._parse_host_dt(job.get("last_run_at")),
+            last_error=job.get("last_error") or None,
+            created_at=cls._parse_host_dt(job.get("created_at")),
+        )
+
     # ── 对齐本体 core.cron.manager.CronJobManager 的公开方法面 ─────────────
 
     async def sync_from_db(self) -> None:
@@ -357,10 +524,32 @@ class CronJobManager:
     ) -> _CronJobRecord:
         """登记一个 basic 定时任务（对齐本体 add_basic_job 关键字签名）。
 
-        本体把任务写入 DB 并返回 CronJob PO；SDK 无 DB，任务记录保存在
-        内存（_CronJobRecord，属性面对齐 CronJob PO），调度经 .scheduler
-        （apscheduler 或降级调度器）执行 handler。
+        优先转发宿主 CronCreate（job_type=cron），任务由宿主 internal/cron
+        调度（触发时宿主回传 payload 给插件）；本进程仅保留记录与 handler
+        映射（_basic_handlers，供宿主回传路由），不做本地调度。宿主不可用
+        / bridge 无该 RPC / 创建失败时回退本地调度器实现（任务记录保存在
+        内存 _CronJobRecord，调度经 .scheduler 执行 handler）。
         """
+        ok, host_job = await self._host_call(
+            "cron_create",
+            name=name,
+            job_type="cron",
+            cron_expression=cron_expression,
+            timezone=timezone or "",
+            payload=dict(payload or {}),
+            description=description or "",
+            enabled=bool(enabled),
+            run_once=False,
+            run_at="",
+        )
+        if ok and isinstance(host_job, dict) and host_job.get("job_id"):
+            record = self._record_from_host_job(host_job)
+            if record is not None:
+                self._jobs[record.job_id] = record
+                self._basic_handlers[record.job_id] = handler
+                self._host_jobs.add(record.job_id)
+                return record
+        # 本地兜底（宿主不可用 / 创建失败）
         record = _CronJobRecord(
             job_id=uuid.uuid4().hex,
             name=name,
@@ -396,11 +585,33 @@ class CronJobManager:
     ) -> _CronJobRecord:
         """登记一个 active_agent 定时任务（对齐本体 add_active_job 签名）。
 
-        本体触发时会唤醒主 agent 处理 payload；SDK 运行时无主 agent，
-        触发时仅记录日志（⚠️ 功能降级）。
+        优先转发宿主 CronCreate（run_once → job_type="once" + run_at
+        RFC3339；否则 job_type="cron"），任务由宿主调度并在触发时唤醒
+        宿主主 agent。宿主不可用 / bridge 无该 RPC / 创建失败时回退本地
+        实现：任务记录保存在内存，触发时仅记录日志（⚠️ 本地路径无法唤醒
+        主 agent）。
         """
         if run_once and run_at is not None:
             payload = {**(payload or {}), "run_at": run_at.isoformat()}
+        ok, host_job = await self._host_call(
+            "cron_create",
+            name=name,
+            job_type="once" if run_once else "cron",
+            cron_expression=cron_expression or "",
+            timezone=timezone or "",
+            payload=dict(payload or {}),
+            description=description or "",
+            enabled=bool(enabled),
+            run_once=bool(run_once),
+            run_at=self._rfc3339(run_at),
+        )
+        if ok and isinstance(host_job, dict) and host_job.get("job_id"):
+            record = self._record_from_host_job(host_job)
+            if record is not None:
+                self._jobs[record.job_id] = record
+                self._host_jobs.add(record.job_id)
+                return record
+        # 本地兜底（宿主不可用 / 创建失败）
         record = _CronJobRecord(
             job_id=uuid.uuid4().hex,
             name=name,
@@ -425,10 +636,36 @@ class CronJobManager:
     async def update_job(self, job_id: str, **kwargs) -> _CronJobRecord | None:
         """更新任务（对齐本体 update_job：未找到返回 None）。
 
-        支持更新 name/cron_expression/timezone/payload/description/enabled/
-        persistent/run_once/run_at 与 handler（本体 handler 由调用方另行
-        维护，SDK 一并接收便于重调度）。
+        优先转发宿主 CronUpdate（fields 部分更新语义，仅 name/
+        cron_expression/timezone/payload/description/enabled 可映射宿主
+        字段；handler/persistent/run_once/run_at 为本进程概念，仅本地记录
+        生效）。宿主不可用 / 任务不在宿主侧（宿主返回空快照）时回退本地
+        调度器实现。
         """
+        field_map = {
+            "name": "name",
+            "cron_expression": "cron_expression",
+            "timezone": "timezone",
+            "payload": "payload",
+            "description": "description",
+            "enabled": "enabled",
+        }
+        host_fields = {
+            host_key: kwargs[local_key]
+            for local_key, host_key in field_map.items()
+            if local_key in kwargs
+        }
+        if host_fields:
+            ok, host_job = await self._host_call(
+                "cron_update", job_id=job_id, fields=host_fields
+            )
+            if ok and isinstance(host_job, dict) and host_job.get("job_id"):
+                record = self._record_from_host_job(host_job)
+                if record is not None:
+                    self._jobs[record.job_id] = record
+                    self._host_jobs.add(record.job_id)
+                    return record
+        # 本地兜底（宿主不可用 / 任务不在宿主侧 / 仅更新本进程字段）
         record = self._jobs.get(job_id)
         if record is None:
             return None
@@ -447,13 +684,35 @@ class CronJobManager:
         return record
 
     async def delete_job(self, job_id: str) -> None:
-        """删除任务（对齐本体 delete_job：async，同时移除调度与处理器）。"""
+        """删除任务（对齐本体 delete_job：async，同时移除调度与处理器）。
+
+        优先转发宿主 CronDelete；宿主不可用时仅做本地清理（宿主恢复后该
+        任务仍留在宿主侧，属降级局限）。本地镜像（记录/处理器/调度）总是
+        一并清理。
+        """
+        await self._host_call("cron_delete", job_id=job_id)
+        self._host_jobs.discard(job_id)
         self._remove_scheduled(job_id)
         self._jobs.pop(job_id, None)
         self._basic_handlers.pop(job_id, None)
 
     async def list_jobs(self, job_type: str | None = None) -> list[_CronJobRecord]:
-        """列出全部任务（对齐本体 list_jobs：async，可按 job_type 过滤）。"""
+        """列出全部任务（对齐本体 list_jobs：async，可按 job_type 过滤）。
+
+        优先转发宿主 CronList，返回宿主 Job 快照还原的 _CronJobRecord
+        （job_type 取宿主类型：cron/interval/once）。宿主不可用 / bridge
+        无该 RPC 时回退本地内存任务列表（job_type 为 basic/active_agent）。
+        """
+        ok, host_jobs = await self._host_call("cron_list", job_type=job_type or "")
+        if ok:
+            records: list[_CronJobRecord] = []
+            for job in host_jobs if isinstance(host_jobs, list) else []:
+                record = self._record_from_host_job(job)
+                if record is not None:
+                    records.append(record)
+                    self._host_jobs.add(record.job_id)
+            return records
+        # 本地兜底（宿主不可用）
         if job_type:
             return [r for r in self._jobs.values() if r.job_type == job_type]
         return list(self._jobs.values())
@@ -461,9 +720,28 @@ class CronJobManager:
     def get_next_run_time(self, job_id: str) -> datetime | None:
         """读取任务下一次运行时间（对齐本体 get_next_run_time）。
 
-        apscheduler 任务取 next_run_time；降级调度器任务（dict 形态）取
-        next_run 时间戳。返回 UTC 感知 datetime，未登记/未调度返回 None。
+        优先读宿主 CronList 快照中该任务的 next_run_time（RFC3339 字符串
+        或 Unix 秒，统一转为 UTC 感知 datetime）；宿主不可用 / 任务不在
+        宿主侧时回退本地调度器读取（apscheduler 任务取 next_run_time；
+        降级调度器任务取 next_run 时间戳）。未登记/未调度返回 None。
         """
+        bridge = self._host_bridge()
+        if bridge is not None:
+            fn = getattr(bridge, "cron_list", None)
+            if fn is not None:
+                try:
+                    host_jobs = fn("")
+                except Exception as e:
+                    logger.debug(f"宿主 cron_list 转发失败（回退本地）: {e}")
+                    host_jobs = []
+                if isinstance(host_jobs, list):
+                    for job in host_jobs:
+                        if (
+                            isinstance(job, dict)
+                            and str(job.get("job_id") or job.get("id") or "") == str(job_id)
+                        ):
+                            return self._parse_host_dt(job.get("next_run_time"))
+                    # 宿主在线但无该任务 → 回退本地检查（可能为本地兜底任务）
         try:
             scheduled = self.scheduler.get_job(job_id)
         except Exception:
@@ -485,9 +763,15 @@ class CronJobManager:
     async def run_job_now(self, job_id: str) -> None:
         """立即执行一次任务（对齐本体 run_job_now）。
 
-        basic 任务直接调用 handler；active_agent 任务 SDK 无法唤醒宿主
-        主 agent，仅记录日志。
+        优先转发宿主 CronRunNow（宿主侧调度触发，basic 任务由宿主回传
+        payload 路由 handler）。宿主不可用 / bridge 无该 RPC / 任务不在
+        宿主侧时回退本地执行：basic 任务直接调用 handler；active_agent
+        任务 SDK 无法唤醒宿主主 agent，仅记录日志。
         """
+        ok, _ = await self._host_call("cron_run_now", job_id=job_id)
+        if ok:
+            return
+        # 本地兜底（宿主不可用 / 任务不在宿主侧）
         record = self._jobs.get(job_id)
         if record is None:
             logger.warning(f"cron_manager run_job_now: 任务 {job_id} 不存在")
@@ -499,6 +783,93 @@ class CronJobManager:
                 f"cron_manager run_job_now: active_agent 任务 {job_id} 在 SDK "
                 "运行时无法唤醒宿主主 agent，已忽略"
             )
+
+    # ── 宿主 FeedCronJob 喂入（宿主 cron 到点 → 插件 handler）───────────
+    def feed_cron_job(
+        self,
+        job_id: str,
+        job_name: str = "",
+        payload: dict | None = None,
+        run_at: str = "",
+    ) -> bool:
+        """宿主 cron 到点触发的本地喂入入口（实例级，模块级同名函数委托）。
+
+        按 job_id 查宿主转发的任务记录：有匹配 handler（_basic_handlers，
+        add_basic_job 转发宿主时已保存）则调度执行并返回 True；无匹配返回
+        False（宿主侧视为未处理，对齐 FeedSessionWait 语义）。执行语义对齐
+        本体 _run_basic_job（handler(**payload) / 无 payload 时 handler()），
+        派发后立即返回（不等待 handler 跑完，宿主 RPC 超时 60s 足够）：
+        - async handler：经 run_coroutine_threadsafe 派发到常驻 loop（等价
+          于在 loop 上 create_task——gRPC 线程无运行循环，不能直接
+          create_task），不阻塞 RPC 返回与常驻 loop；
+        - 同步 handler：派发到独立线程执行（asyncio.run 提供独立 loop 复用
+          _run_basic_job 记账），避免阻塞常驻 loop。
+        run_at 为宿主实际触发时刻（RFC3339，信息性，仅记录日志）。
+        """
+        job_id = str(job_id)
+        handler = self._basic_handlers.get(job_id)
+        if not handler:
+            logger.warning(
+                f"feed_cron_job: 任务 {job_id}({job_name!r}) 无匹配 handler，"
+                "返回 handled=False"
+            )
+            return False
+        record = self._jobs.get(job_id)
+        if record is not None:
+            self._host_jobs.add(job_id)
+        # 宿主回传 payload 优先（含 _plugin_id 路由键）；缺失时回退本地记录。
+        feed_payload = (
+            dict(payload)
+            if isinstance(payload, dict)
+            else dict(record.payload)
+            if record is not None and record.payload
+            else {}
+        )
+        rec_name = getattr(record, "name", None) if record is not None else None
+        logger.info(
+            f"feed_cron_job: 宿主触发任务 {job_id}({rec_name or job_name!r})"
+            f" run_at={run_at or 'N/A'}"
+        )
+        if asyncio.iscoroutinefunction(handler):
+            try:
+                from astrbot._bridge import loop as _bridge_loop
+
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._run_basic_job(job_id, feed_payload),
+                    _bridge_loop.get_loop(),
+                )
+                _feed_futures.add(fut)
+                fut.add_done_callback(self._feed_future_done)
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"feed_cron_job: 任务 {job_id} 派发到常驻 loop 失败: {e!s}")
+                return False
+        else:
+            threading.Thread(
+                target=self._run_feed_job_sync,
+                args=(job_id, feed_payload),
+                daemon=True,
+                name=f"cron-feed-{job_id}",
+            ).start()
+        return True
+
+    @staticmethod
+    def _feed_future_done(fut) -> None:
+        """喂入派发 future 完成回调：回收在途集合与异常（防 never-retrieved）。"""
+        _feed_futures.discard(fut)
+        if fut.cancelled():
+            return
+        exc = fut.exception()
+        if exc is not None:
+            logger.error(f"feed_cron_job: 喂入任务执行失败: {exc!s}")
+
+    def _run_feed_job_sync(self, job_id: str, payload: dict) -> None:
+        """在线程上执行同步 handler 的喂入任务：asyncio.run 提供独立 loop
+        跑 _run_basic_job（复用状态/错误记账），同步 handler 在其中直接
+        调用，不阻塞常驻 loop；handler 返回的协程也能被正确 await。"""
+        try:
+            asyncio.run(self._run_basic_job(job_id, payload))
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"feed_cron_job: 喂入任务 {job_id} 执行失败: {e!s}")
 
     # ── 内部调度实现 ────────────────────────────────────────────────
 
@@ -605,8 +976,14 @@ class CronJobManager:
 
         return _active_job_func
 
-    async def _run_basic_job(self, job_id: str) -> None:
-        """执行 basic 任务 handler（对齐本体 _run_basic_job 语义）。"""
+    async def _run_basic_job(self, job_id: str, payload: dict | None = None) -> None:
+        """执行 basic 任务 handler（对齐本体 _run_basic_job 语义）。
+
+        payload 覆盖参数供宿主 FeedCronJob 转发路径使用（宿主回传的
+        payload_json）；缺省读本地任务记录的 payload。宿主注入的 _plugin_id
+        路由键不属于用户 payload，触发时统一剥离，对齐本体
+        handler(**用户 payload) 语义。
+        """
         handler = self._basic_handlers.get(job_id)
         record = self._jobs.get(job_id)
         if not handler:
@@ -614,7 +991,11 @@ class CronJobManager:
                 f"cron_manager: 任务 {job_id} 的 handler 已丢失，跳过执行"
             )
             return
-        payload = dict(record.payload) if record and record.payload else {}
+        if payload is None:
+            payload = dict(record.payload) if record and record.payload else {}
+        else:
+            payload = dict(payload)
+        payload.pop("_plugin_id", None)
         try:
             result = handler(**payload) if payload else handler()
             if asyncio.iscoroutine(result):

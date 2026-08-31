@@ -98,11 +98,17 @@ def check_all_kb(kb_list: list[Any] | None) -> bool:
 
     # 与本体一致：仅当所有非 None 库的 doc_count 与 chunk_count 都为 0 时
     # 才视为"全空"（本体访问 kb_helper.kb.doc_count；SDK 对无 .kb 包装的
-    # 对象退化为自身，属性缺失按 0 兜底，保证鸭子类型访问不炸）。
+    # 对象退化为自身，属性缺失按 0 兜底，保证鸭子类型访问不炸；KB 宿主
+    # 桥真实现返回 dict 形态时按 kb.get 取键）。
     def _kb_counters(kb: Any) -> tuple[int, int]:
         inner = getattr(kb, "kb", None)
         if inner is None:
             inner = kb
+        if isinstance(inner, dict):
+            return (
+                inner.get("doc_count", 0) or 0,
+                inner.get("chunk_count", 0) or 0,
+            )
         return (
             getattr(inner, "doc_count", 0) or 0,
             getattr(inner, "chunk_count", 0) or 0,
@@ -123,7 +129,8 @@ async def retrieve_knowledge_base(
 
     与本体一致支持两级配置：会话级 ``kb_config``（sp.session_get）优先，
     其次全局配置 ``kb_names``；无可用库或检索无结果时返回 None。
-    SDK kb_manager.retrieve 为降级实现（恒 None），真实检索由宿主完成。
+    SDK kb_manager.retrieve 经宿主 KBRetrieve RPC 真实现；宿主不可用时
+    降级为 None。
     """
     if context is None:
         return None
@@ -149,7 +156,12 @@ async def retrieve_knowledge_base(
             for kb_id in kb_ids:
                 kb_helper = await kb_mgr.get_kb(kb_id)
                 if kb_helper:
-                    kb_names.append(getattr(kb_helper.kb, "kb_name", "") or "")
+                    # KB 宿主桥真实现返回 dict 形态（宿主 KnowledgeBase JSON）
+                    if isinstance(kb_helper, dict):
+                        name = str(kb_helper.get("kb_name") or "")
+                    else:
+                        name = getattr(kb_helper.kb, "kb_name", "") or ""
+                    kb_names.append(name)
                 else:
                     logger.warning("[知识库] 知识库不存在或未加载: %s", kb_id)
             kb_names = [name for name in kb_names if name]

@@ -428,23 +428,32 @@ class SkillManager:
     ) -> list[SkillInfo]:
         """列出全部技能（active_only 时只返回启用项）。
 
-        转发宿主 bridge.list_skills(active_only, runtime)（active_only 由
-        bridge 在客户端过滤）；bridge 未接入宿主时恒返回空列表（不抛异常）。
-        宿主 ListSkills RPC 固定以 runtime="local" 返回，``runtime`` 与
-        ``show_sandbox_path`` 不产生路径差异（宿主统一维护路径形态）。
+        优先转发宿主 bridge.list_skills_v2(active_only, runtime,
+        show_sandbox_path)（宿主已支持 sandbox 视图与 sandbox 路径形态）；
+        宿主桥未提供 list_skills_v2（旧版宿主）时回退现有
+        bridge.list_skills(active_only, runtime)。两路均不可用时恒返回
+        空列表（不抛异常）。
         """
+        raw: list | tuple | None = None
         bridge = _host_bridge()
-        if bridge is None:
-            return []
-        fn = getattr(bridge, "list_skills", None)
-        if fn is None:
-            logger.debug("宿主 bridge 未提供 list_skills，技能列表为空")
-            return []
-        try:
-            raw = fn(active_only or False, runtime or "")
-        except Exception:
-            logger.warning("宿主 list_skills 失败（降级为空列表）")
-            return []
+        if bridge is not None:
+            v2 = getattr(bridge, "list_skills_v2", None)
+            if v2 is not None:
+                try:
+                    raw = v2(active_only or False, runtime or "", bool(show_sandbox_path))
+                except Exception:
+                    logger.warning("宿主 list_skills_v2 失败（回退 list_skills）")
+                    raw = None
+            if raw is None:
+                fn = getattr(bridge, "list_skills", None)
+                if fn is not None:
+                    try:
+                        raw = fn(active_only or False, runtime or "")
+                    except Exception:
+                        logger.warning("宿主 list_skills 失败（降级为空列表）")
+                        raw = None
+                else:
+                    logger.debug("宿主 bridge 未提供 list_skills，技能列表为空")
         skills: list[SkillInfo] = []
         for item in raw if isinstance(raw, (list, tuple)) else []:
             if isinstance(item, dict):

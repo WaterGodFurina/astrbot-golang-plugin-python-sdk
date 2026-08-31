@@ -672,6 +672,30 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
             logger.error(f"FeedSessionWait 分发失败: {e}")
             return plugin_pb2.FeedSessionWaitResponse(handled=False)
 
+    def FeedCronJob(self, request, context) -> plugin_pb2.FeedCronJobResponse:
+        """宿主推送“插件 basic 定时任务到点触发”（cron 跨进程喂入）。解析
+        payload 后经 cron_manager 的模块级喂入入口按 job_id 匹配宿主转发的
+        任务记录（handler 保存在本地）并调度执行；无匹配 handler 返回
+        handled=False（对齐 FeedSessionWait 语义）。handler 派发后立即返回，
+        不在本 RPC 内等待执行完成（宿主超时 60s）。"""
+        try:
+            payload = json.loads(request.payload_json) if request.payload_json else {}
+            if not isinstance(payload, dict):
+                payload = {}
+        except json.JSONDecodeError as e:
+            logger.error(f"FeedCronJob: payload 解析失败: {e}")
+            return plugin_pb2.FeedCronJobResponse(handled=False)
+        try:
+            from astrbot.core.utils.cron_manager import feed_cron_job
+
+            handled = bool(
+                feed_cron_job(request.job_id, request.job_name, payload, request.run_at)
+            )
+            return plugin_pb2.FeedCronJobResponse(handled=handled)
+        except Exception as e:
+            logger.error(f"FeedCronJob 分发失败: {e}")
+            return plugin_pb2.FeedCronJobResponse(handled=False)
+
     def GetConfigSchema(self, request, context) -> plugin_pb2.GetConfigSchemaResponse:
         """宿主实时拉取插件当前配置 schema（对齐 Python AstrBot：WebUI 配置
         对话框读取运行中 star 实例的 config.schema）。update_manager 等插件在

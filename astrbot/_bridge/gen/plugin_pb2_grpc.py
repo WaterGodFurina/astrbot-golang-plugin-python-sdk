@@ -108,6 +108,11 @@ class PluginServiceStub:
                 request_serializer=plugin__pb2.Empty.SerializeToString,
                 response_deserializer=plugin__pb2.Empty.FromString,
                 _registered_method=True)
+        self.FeedCronJob = channel.unary_unary(
+                '/astrbot.sdk.v1.PluginService/FeedCronJob',
+                request_serializer=plugin__pb2.FeedCronJobRequest.SerializeToString,
+                response_deserializer=plugin__pb2.FeedCronJobResponse.FromString,
+                _registered_method=True)
 
 
 class PluginServiceServicer:
@@ -236,6 +241,15 @@ class PluginServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def FeedCronJob(self, request, context):
+        """FeedCronJob 宿主 cron 到点触发插件注册的 basic 任务（经 CronCreate
+        注册、payload 带 _plugin_id），插件执行注册的 handler；无匹配 handler
+        返回 handled=false（对齐 FeedSessionWait 语义）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_PluginServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -308,6 +322,11 @@ def add_PluginServiceServicer_to_server(servicer, server):
                     servicer.Cleanup,
                     request_deserializer=plugin__pb2.Empty.FromString,
                     response_serializer=plugin__pb2.Empty.SerializeToString,
+            ),
+            'FeedCronJob': grpc.unary_unary_rpc_method_handler(
+                    servicer.FeedCronJob,
+                    request_deserializer=plugin__pb2.FeedCronJobRequest.FromString,
+                    response_serializer=plugin__pb2.FeedCronJobResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -702,6 +721,33 @@ class PluginService:
             metadata,
             _registered_method=True)
 
+    @staticmethod
+    def FeedCronJob(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.PluginService/FeedCronJob',
+            plugin__pb2.FeedCronJobRequest.SerializeToString,
+            plugin__pb2.FeedCronJobResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
 
 class HostServiceStub:
     """HostService is served by the HOST and dialed by plugins for reverse calls.
@@ -947,6 +993,66 @@ class HostServiceStub:
                 '/astrbot.sdk.v1.HostService/DeletePlatformMessageHistory',
                 request_serializer=plugin__pb2.DeletePMHistoryRequest.SerializeToString,
                 response_deserializer=plugin__pb2.Empty.FromString,
+                _registered_method=True)
+        self.KBRetrieve = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/KBRetrieve',
+                request_serializer=plugin__pb2.KBRetrieveRequest.SerializeToString,
+                response_deserializer=plugin__pb2.KBRetrieveResponse.FromString,
+                _registered_method=True)
+        self.KBUploadFromURL = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/KBUploadFromURL',
+                request_serializer=plugin__pb2.KBUploadFromURLRequest.SerializeToString,
+                response_deserializer=plugin__pb2.Empty.FromString,
+                _registered_method=True)
+        self.KBListKBs = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/KBListKBs',
+                request_serializer=plugin__pb2.Empty.SerializeToString,
+                response_deserializer=plugin__pb2.KBListResponse.FromString,
+                _registered_method=True)
+        self.ListSkillsV2 = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/ListSkillsV2',
+                request_serializer=plugin__pb2.ListSkillsV2Request.SerializeToString,
+                response_deserializer=plugin__pb2.SkillsResponse.FromString,
+                _registered_method=True)
+        self.RegisterFileToken = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/RegisterFileToken',
+                request_serializer=plugin__pb2.RegisterFileTokenRequest.SerializeToString,
+                response_deserializer=plugin__pb2.RegisterFileTokenResponse.FromString,
+                _registered_method=True)
+        self.CronCreate = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/CronCreate',
+                request_serializer=plugin__pb2.CronCreateRequest.SerializeToString,
+                response_deserializer=plugin__pb2.CronJobResponse.FromString,
+                _registered_method=True)
+        self.CronUpdate = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/CronUpdate',
+                request_serializer=plugin__pb2.CronUpdateRequest.SerializeToString,
+                response_deserializer=plugin__pb2.CronJobResponse.FromString,
+                _registered_method=True)
+        self.CronDelete = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/CronDelete',
+                request_serializer=plugin__pb2.CronDeleteRequest.SerializeToString,
+                response_deserializer=plugin__pb2.Empty.FromString,
+                _registered_method=True)
+        self.CronList = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/CronList',
+                request_serializer=plugin__pb2.CronListRequest.SerializeToString,
+                response_deserializer=plugin__pb2.CronJobsResponse.FromString,
+                _registered_method=True)
+        self.CronRunNow = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/CronRunNow',
+                request_serializer=plugin__pb2.CronRunNowRequest.SerializeToString,
+                response_deserializer=plugin__pb2.Empty.FromString,
+                _registered_method=True)
+        self.McpListTools = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/McpListTools',
+                request_serializer=plugin__pb2.Empty.SerializeToString,
+                response_deserializer=plugin__pb2.McpToolsResponse.FromString,
+                _registered_method=True)
+        self.McpCallTool = channel.unary_unary(
+                '/astrbot.sdk.v1.HostService/McpCallTool',
+                request_serializer=plugin__pb2.McpCallToolRequest.SerializeToString,
+                response_deserializer=plugin__pb2.McpCallToolResponse.FromString,
                 _registered_method=True)
 
 
@@ -1296,6 +1402,107 @@ class HostServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def KBRetrieve(self, request, context):
+        """── 知识库（对齐宿主 internal/knowledgebase/manager.go）──
+        KBRetrieve 检索知识库：按 query 做向量/融合检索。kb_names 为空 =
+        宿主全部启用中的知识库；top_k_fusion 为融合召回数，top_m_final 为最终
+        保留条数（<=0 用宿主默认）。返回拼接后的上下文文本与检索结果 JSON 数组
+        （空结果时 context_text 为空、results_json 为 "[]"）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def KBUploadFromURL(self, request, context):
+        """KBUploadFromURL 让宿主从 URL 拉取文档写入指定知识库并分块（chunk_size/
+        chunk_overlap <=0 用宿主默认）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def KBListKBs(self, request, context):
+        """KBListKBs 列出宿主全部知识库元数据（每项为 KnowledgeBase 结构 JSON）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListSkillsV2(self, request, context):
+        """── 技能视图扩展（sandbox runtime 视图）──
+        ListSkillsV2 带过滤参数的技能列表：active_only 仅返回启用技能；runtime
+        过滤运行时视图（"local"/"sandbox"/""=全部）；show_sandbox_path 返回
+        sandbox 路径而非宿主本地路径。复用既有 SkillsResponse。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RegisterFileToken(self, request, context):
+        """── 文件令牌（file_token 文件服务）──
+        RegisterFileToken 把一个宿主侧文件路径登记为一次性令牌（timeout_sec
+        =0 用宿主默认 TTL），返回的 token 可供下游（如 sandbox runtime）凭
+        token 读取文件，避免暴露真实路径。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CronCreate(self, request, context):
+        """── 插件定时任务（宿主 internal/cron）──
+        CronCreate 创建定时任务（job_type: cron / interval / once 等，run_once
+        + run_at(RFC3339) 用于一次性任务），返回宿主 Job 快照。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CronUpdate(self, request, context):
+        """CronUpdate 按 job_id 更新任务字段（fields_json 指定更新字段集）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CronDelete(self, request, context):
+        """CronDelete 删除指定定时任务。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CronList(self, request, context):
+        """CronList 列出定时任务（job_type 空=全部）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CronRunNow(self, request, context):
+        """CronRunNow 立即触发一次指定任务。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def McpListTools(self, request, context):
+        """── 宿主 MCP 读写桥接（只读列出 + 调用宿主侧 MCP 工具；插件自管 MCP
+        不经此通道）──
+        McpListTools 列出宿主已连接 MCP server 的全部工具
+        （每项 {server, name, description, schema_json}）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def McpCallTool(self, request, context):
+        """McpCallTool 调用宿主侧 MCP 工具（server + tool_name + arguments_json），
+        返回完整结果 JSON / 纯文本摘要 / 是否出错。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_HostServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -1533,6 +1740,66 @@ def add_HostServiceServicer_to_server(servicer, server):
                     servicer.DeletePlatformMessageHistory,
                     request_deserializer=plugin__pb2.DeletePMHistoryRequest.FromString,
                     response_serializer=plugin__pb2.Empty.SerializeToString,
+            ),
+            'KBRetrieve': grpc.unary_unary_rpc_method_handler(
+                    servicer.KBRetrieve,
+                    request_deserializer=plugin__pb2.KBRetrieveRequest.FromString,
+                    response_serializer=plugin__pb2.KBRetrieveResponse.SerializeToString,
+            ),
+            'KBUploadFromURL': grpc.unary_unary_rpc_method_handler(
+                    servicer.KBUploadFromURL,
+                    request_deserializer=plugin__pb2.KBUploadFromURLRequest.FromString,
+                    response_serializer=plugin__pb2.Empty.SerializeToString,
+            ),
+            'KBListKBs': grpc.unary_unary_rpc_method_handler(
+                    servicer.KBListKBs,
+                    request_deserializer=plugin__pb2.Empty.FromString,
+                    response_serializer=plugin__pb2.KBListResponse.SerializeToString,
+            ),
+            'ListSkillsV2': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListSkillsV2,
+                    request_deserializer=plugin__pb2.ListSkillsV2Request.FromString,
+                    response_serializer=plugin__pb2.SkillsResponse.SerializeToString,
+            ),
+            'RegisterFileToken': grpc.unary_unary_rpc_method_handler(
+                    servicer.RegisterFileToken,
+                    request_deserializer=plugin__pb2.RegisterFileTokenRequest.FromString,
+                    response_serializer=plugin__pb2.RegisterFileTokenResponse.SerializeToString,
+            ),
+            'CronCreate': grpc.unary_unary_rpc_method_handler(
+                    servicer.CronCreate,
+                    request_deserializer=plugin__pb2.CronCreateRequest.FromString,
+                    response_serializer=plugin__pb2.CronJobResponse.SerializeToString,
+            ),
+            'CronUpdate': grpc.unary_unary_rpc_method_handler(
+                    servicer.CronUpdate,
+                    request_deserializer=plugin__pb2.CronUpdateRequest.FromString,
+                    response_serializer=plugin__pb2.CronJobResponse.SerializeToString,
+            ),
+            'CronDelete': grpc.unary_unary_rpc_method_handler(
+                    servicer.CronDelete,
+                    request_deserializer=plugin__pb2.CronDeleteRequest.FromString,
+                    response_serializer=plugin__pb2.Empty.SerializeToString,
+            ),
+            'CronList': grpc.unary_unary_rpc_method_handler(
+                    servicer.CronList,
+                    request_deserializer=plugin__pb2.CronListRequest.FromString,
+                    response_serializer=plugin__pb2.CronJobsResponse.SerializeToString,
+            ),
+            'CronRunNow': grpc.unary_unary_rpc_method_handler(
+                    servicer.CronRunNow,
+                    request_deserializer=plugin__pb2.CronRunNowRequest.FromString,
+                    response_serializer=plugin__pb2.Empty.SerializeToString,
+            ),
+            'McpListTools': grpc.unary_unary_rpc_method_handler(
+                    servicer.McpListTools,
+                    request_deserializer=plugin__pb2.Empty.FromString,
+                    response_serializer=plugin__pb2.McpToolsResponse.SerializeToString,
+            ),
+            'McpCallTool': grpc.unary_unary_rpc_method_handler(
+                    servicer.McpCallTool,
+                    request_deserializer=plugin__pb2.McpCallToolRequest.FromString,
+                    response_serializer=plugin__pb2.McpCallToolResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -2805,6 +3072,330 @@ class HostService:
             '/astrbot.sdk.v1.HostService/DeletePlatformMessageHistory',
             plugin__pb2.DeletePMHistoryRequest.SerializeToString,
             plugin__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def KBRetrieve(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/KBRetrieve',
+            plugin__pb2.KBRetrieveRequest.SerializeToString,
+            plugin__pb2.KBRetrieveResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def KBUploadFromURL(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/KBUploadFromURL',
+            plugin__pb2.KBUploadFromURLRequest.SerializeToString,
+            plugin__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def KBListKBs(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/KBListKBs',
+            plugin__pb2.Empty.SerializeToString,
+            plugin__pb2.KBListResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListSkillsV2(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/ListSkillsV2',
+            plugin__pb2.ListSkillsV2Request.SerializeToString,
+            plugin__pb2.SkillsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RegisterFileToken(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/RegisterFileToken',
+            plugin__pb2.RegisterFileTokenRequest.SerializeToString,
+            plugin__pb2.RegisterFileTokenResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CronCreate(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/CronCreate',
+            plugin__pb2.CronCreateRequest.SerializeToString,
+            plugin__pb2.CronJobResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CronUpdate(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/CronUpdate',
+            plugin__pb2.CronUpdateRequest.SerializeToString,
+            plugin__pb2.CronJobResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CronDelete(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/CronDelete',
+            plugin__pb2.CronDeleteRequest.SerializeToString,
+            plugin__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CronList(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/CronList',
+            plugin__pb2.CronListRequest.SerializeToString,
+            plugin__pb2.CronJobsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CronRunNow(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/CronRunNow',
+            plugin__pb2.CronRunNowRequest.SerializeToString,
+            plugin__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def McpListTools(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/McpListTools',
+            plugin__pb2.Empty.SerializeToString,
+            plugin__pb2.McpToolsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def McpCallTool(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.HostService/McpCallTool',
+            plugin__pb2.McpCallToolRequest.SerializeToString,
+            plugin__pb2.McpCallToolResponse.FromString,
             options,
             channel_credentials,
             insecure,
