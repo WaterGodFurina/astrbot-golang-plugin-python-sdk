@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import grpc
 import logging
 
 # P1 协议版本：Event/Component/Chain 原生 protobuf data plane（0 JSON）。

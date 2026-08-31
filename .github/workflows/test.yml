@@ -21,3 +21,5 @@ jobs:
           pip install protobuf grpcio packaging
       - name: Run SDK unit tests
         run: python tests/run_tests.py
+      - name: Run full RPC coverage tests
+        run: python tests/test_all_rpcs.py
