@@ -304,7 +304,24 @@ def component_from_proto(c, _depth: int = 0) -> BaseMessageComponent:
                 data = {}
         return Json(data=data or {})
     if ctype == "Reply":
-        return Reply(id=c.id or "", message_str=c.text or "")
+        # 宿主 proto 侧全量传输引用消息（sender_id/sender_name/sender_time/
+        # chain），对齐 Python 原版 aiocqhttp adapter 构造 Reply 的语义；
+        # 旧宿主/插件发送方向这些字段为空，行为与原实现一致。
+        chain = []
+        if _depth < _MAX_NODE_DEPTH:
+            chain = [component_from_proto(sub, _depth + 1) for sub in (c.chain or [])]
+        sender_id = str(c.sender_id or "")
+        time_ = int(c.sender_time or 0)
+        return Reply(
+            id=c.id or "",
+            chain=chain,
+            sender_id=sender_id,
+            sender_nickname=c.sender_name or "",
+            time=time_,
+            message_str=c.text or "",
+            text=c.text or "",  # deprecated（对齐原版：text=message_str）
+            qq=sender_id,  # deprecated（对齐原版：qq=sender_id）
+        )
     if ctype == "Node":
         if _depth >= _MAX_NODE_DEPTH:
             return Unknown(text="")
