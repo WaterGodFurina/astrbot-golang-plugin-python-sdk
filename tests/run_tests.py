@@ -1073,6 +1073,109 @@ class TestEmbeddingBatch(unittest.TestCase):
         self.assertEqual(calls[-1], (2, 2))
 
 
+class TestDepsResolver(unittest.TestCase):
+    """依赖懒加载解析器：IMPORT_MAP 一致性、顶层名提取、meta_path 拦截。
+
+    覆盖：映射表键值非空、顶层名提取（astrbot._bridge.dummy → astrbot）、
+    未映射模块不触发安装、finder 安装/卸载的 meta_path 状态、
+    安装成功后 invalidate_caches + find_spec 重试、坏包只尝试一次。
+    """
+
+    def setUp(self):
+        from astrbot._bridge import deps_resolver as dr
+
+        self.dr = dr
+        # 用例间隔离：卸载 finder、清空尝试记录与重入标记
+        dr.uninstall_import_resolver()
+        dr._attempted.clear()
+        self.addCleanup(dr.uninstall_import_resolver)
+        self.addCleanup(dr._attempted.clear)
+
+    def test_import_map_sanity(self):
+        dr = self.dr
+        # 最终 50-70 条
+        self.assertGreaterEqual(len(dr.IMPORT_MAP), 50)
+        self.assertLessEqual(len(dr.IMPORT_MAP), 70)
+        for k, v in dr.IMPORT_MAP.items():
+            self.assertTrue(k.strip(), f"空键: {v!r}")
+            self.assertTrue(v.strip(), f"空值: {k!r}")
+
+    def test_top_level_extraction_and_lookup(self):
+        dr = self.dr
+        # 顶层名提取：astrbot._bridge.dummy → astrbot
+        self.assertEqual(dr._top_level("astrbot._bridge.dummy"), "astrbot")
+        self.assertEqual(dr._top_level("yaml"), "yaml")
+        # 顶层回退查询：yaml.safe_load → pyyaml
+        self.assertEqual(dr._lookup_pkg("yaml.safe_load"), "pyyaml")
+        self.assertEqual(dr._lookup_pkg("grpc"), "grpcio")
+        # 二级精确匹配优先：google.protobuf → protobuf
+        self.assertEqual(dr._lookup_pkg("google.protobuf"), "protobuf")
+        # 未映射 → None（含 SDK 自身子模块名）
+        self.assertIsNone(dr._lookup_pkg("astrbot._bridge.dummy"))
+        self.assertIsNone(dr._lookup_pkg("astrbot_nonexistent_pkg_xyz"))
+
+    def test_unmapped_module_returns_none_without_install(self):
+        from unittest import mock
+
+        dr = self.dr
+        calls = []
+        dr.install_import_resolver()
+        # 未映射名字不得触发 pip：ensure_import_module 一次都不应被调用
+        with mock.patch.object(
+            dr, "ensure_import_module",
+            side_effect=lambda n: calls.append(n) or True,
+        ):
+            spec = dr._finder.find_spec("astrbot_nonexistent_pkg_xyz")
+        self.assertIsNone(spec)
+        self.assertEqual(calls, [])
+        self.assertNotIn("astrbot_nonexistent_pkg_xyz", dr._attempted)
+
+    def test_install_uninstall_meta_path_state(self):
+        dr = self.dr
+        before = list(sys.meta_path)
+        dr.install_import_resolver()
+        self.assertIn(dr._finder, sys.meta_path)
+        # 追加在末尾：只有前面的 finder 都 miss 时才轮到懒加载
+        self.assertIs(sys.meta_path[-1], dr._finder)
+        # 幂等：重复 install 不重复追加
+        dr.install_import_resolver()
+        self.assertEqual(sys.meta_path.count(dr._finder), 1)
+        dr.uninstall_import_resolver()
+        self.assertNotIn(dr._finder, sys.meta_path)
+        # 幂等：重复 uninstall 不抛
+        dr.uninstall_import_resolver()
+        self.assertEqual(list(sys.meta_path), before)
+
+    def test_find_spec_retry_after_mock_install(self):
+        """映射命中 + 安装成功 → invalidate_caches 后用 find_spec 重查。"""
+        from unittest import mock
+
+        dr = self.dr
+        sentinel = object()
+        cache_calls = []
+        dr.install_import_resolver()
+        with mock.patch.object(dr, "ensure_import_module", return_value=True), \
+                mock.patch.object(dr.importlib.util, "find_spec", return_value=sentinel), \
+                mock.patch.object(
+                    dr.importlib, "invalidate_caches",
+                    side_effect=lambda: cache_calls.append(1),
+                ):
+            # 临时映射（addCleanup 清理，不污染真实表）
+            dr.IMPORT_MAP["astrbot_lazyfake_pkg"] = "lazyfake-pkg"
+            self.addCleanup(dr.IMPORT_MAP.pop, "astrbot_lazyfake_pkg", None)
+            spec = dr._finder.find_spec("astrbot_lazyfake_pkg")
+            self.assertIs(spec, sentinel)
+            self.assertEqual(cache_calls, [1])
+            # 已尝试过 → 第二次不再安装，直接返回 None
+            spec2 = dr._finder.find_spec("astrbot_lazyfake_pkg")
+        self.assertIsNone(spec2)
+
+    def test_ensure_import_module_unmapped_false(self):
+        dr = self.dr
+        # 未映射：直接 False，不 spawn pip
+        self.assertFalse(dr.ensure_import_module("astrbot_nonexistent_pkg_xyz"))
+
+
 if __name__ == "__main__":
     # 1) 本文件内嵌测试（unittest.main 只加载 __main__ 模块，不扫描目录）
     prog = unittest.main(verbosity=2, exit=False)

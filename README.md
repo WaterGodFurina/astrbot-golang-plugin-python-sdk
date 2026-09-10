@@ -85,7 +85,10 @@ class HelloPlugin(Star):
 
 1. 检测解释器：`ASTRBOT_PYTHON_BIN` > PATH `python3` > **自动下载
    python-build-standalone**（无系统 Python 时，见宿主文档）
-2. 创建 venv 并安装 `grpcio` / `protobuf`（缓存于 `~/.cache/astrbot-go/`）
+2. 创建 venv 并只预装核心层依赖 `grpcio` / `protobuf`（缓存于
+   `~/.cache/astrbot-go/`）；其余依赖在插件 import 缺失时由 SDK 的
+   懒加载解析器（`astrbot/_bridge/deps_resolver.py`）按映射表自动
+   pip 安装
 3. `python3 -m astrbot._bridge.server <插件目录>` 启动子进程
 4. go-plugin 握手 + gRPC（`PluginService` + `plugin.GRPCBroker`），
    与 Go 插件走同一 RPC 契约，宿主侧完全透明
@@ -139,7 +142,7 @@ AstrMessageEvent.from_proto()   ← P1 新增
   回退 `image_base64`。
 
 **版本纪律**：行为不兼容的变更必须 bump `P1_PROTOCOL_VERSION` 与本仓库 tag
-（当前 v0.9.0）。
+（当前 v0.9.6）。
 
 ## 宿主如何消费本 Go 模块
 

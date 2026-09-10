@@ -20,6 +20,14 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+from astrbot._bridge.deps_resolver import install_import_resolver
+
+# 懒加载依赖解析器必须在一切重依赖 import（grpc 等）之前挂上：
+# meta_path 全局生效后，插件代码 import 缺失的第三方依赖时按 IMPORT_MAP
+# 自动 pip 安装（分层安装：宿主只预装核心层 grpcio/protobuf，其余见
+# deps_resolver.py）。挂在 sys.meta_path 末尾，已装包零开销。
+install_import_resolver()
+
 HOST_SERVICE_APP_ID = 9000
 
 logger = logging.getLogger("astrbot")
