@@ -388,6 +388,27 @@ class TestPlatformBotProxy(unittest.TestCase):
             ],
         )
 
+    def test_positional_dict_and_str_arg(self):
+        import asyncio
+
+        async def run():
+            # 对齐 aiocqhttp：单个 dict 位置参并入 params（qqadmin 等插件写法）。
+            await self.proxy.get_group_member_info({"group_id": 1, "user_id": 2})
+            # 混合：dict 位置参 + kwargs。
+            await self.proxy.set_group_ban({"group_id": 7}, duration=60)
+            # 非 dict 位置参 → 明确 TypeError，不再崩于 f-string。
+            with self.assertRaises(TypeError):
+                await self.proxy.get_group_info(123)
+
+        asyncio.run(run())
+        self.assertEqual(
+            self.calls,
+            [
+                ("aiocqhttp_main", "get_group_member_info", {"group_id": 1, "user_id": 2}),
+                ("aiocqhttp_main", "set_group_ban", {"group_id": 7, "duration": 60}),
+            ],
+        )
+
     def test_defined_attrs_not_intercepted(self):
         import asyncio
 

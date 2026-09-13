@@ -185,8 +185,16 @@ class _PlatformBotProxy:
         ):
             raise AttributeError(action)
 
-        async def _call(**params) -> Any:
-            return await self.call_action(action, **params)
+        async def _call(*args, **params) -> Any:
+            merged = dict(params)
+            for a in args:
+                if isinstance(a, dict):
+                    merged.update(a)
+                else:
+                    raise TypeError(
+                        f"{action}() 位置参数仅支持 dict 参数包（对齐 aiocqhttp），收到 {type(a).__name__}"
+                    )
+            return await self.call_action(action, **merged)
 
         return _call
 
