@@ -94,11 +94,18 @@ def _scan_hardcoded_dirs(plugin_dir: str, legacy_name: str) -> bool:
     return False
 
 
-def _redirect(p: str) -> str:
+def _redirect(p):
     if _legacy_pattern is None or not p:
         return p
-    p = os.fspath(p)
-    return _legacy_pattern.sub(lambda m: m.group(1) + _real_name, p)
+    # 非路径参数必须原样透传：os.fspath(int) 抛 TypeError，而 builtins.open/io.open
+    # 被 Popen 内部用数字 fd 调用（io.open(c2pread, "rb")），os.stat(fd) 同理。
+    # bytes / 返回 bytes 的 PathLike 也不重定向（源码扫描只匹配 str 路径）。
+    if not isinstance(p, (str, os.PathLike)):
+        return p
+    s = os.fspath(p)
+    if not isinstance(s, str):
+        return p
+    return _legacy_pattern.sub(lambda m: m.group(1) + _real_name, s)
 
 
 def _install_hooks() -> None:
