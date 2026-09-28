@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import logging
+import asyncio
+import inspect
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
@@ -151,6 +153,19 @@ def _resolve_tool_handler_module_path(tool: FunctionTool) -> str:
     return registered_module_path or ".".join(module_parts)
 
 
+class _SimpleSelfIDEvent:
+    """on_websocket_connection 回调事件的轻量载体（仅需 self_id）。"""
+
+    def __init__(self, self_id: str = "") -> None:
+        self.self_id = self_id
+
+    def __getitem__(self, key: str):
+        return getattr(self, key)
+
+    def get(self, key: str, default=None):
+        return getattr(self, key, default)
+
+
 class _PlatformBotProxy:
     """跨进程 bot 客户端代理（Go 宿主无 Python 平台对象）。
 
@@ -160,12 +175,59 @@ class _PlatformBotProxy:
 
     def __init__(self, platform_id: str) -> None:
         self._platform_id = platform_id
+        # on_websocket_connection 回调（宿主 WS 在 Go 侧，用轮询 get_login_info 触发）
+        self._ws_callbacks: list[Callable] = []
+        self._ws_poll_started = False
 
     async def call_action(self, api: str, **params) -> Any:
         bridge = get_host_bridge()
         if bridge is None or not bridge.ensure_connected():
             raise RuntimeError("宿主桥未就绪，无法调用平台 API")
         return await bridge.call_action_async(self._platform_id, api, params)
+
+    def on_websocket_connection(self, func: Callable) -> Callable:
+        """WS 连接回调（宿主 WS 在 Go 侧，无法直接回调）。
+
+        同步装饰器（返回 func 本身，绝不产生未 await 的协程）；注册后后台轮询
+        get_login_info，拿到 bot user_id 即用带 self_id 的事件触发回调，对齐
+        aiocqhttp 的 on_websocket_connection 语义（qqadmin 等依赖此获取 self_id）。
+        """
+        self._ws_callbacks.append(func)
+        self._start_ws_poll()
+        return func
+
+    def _start_ws_poll(self) -> None:
+        if self._ws_poll_started:
+            return
+        self._ws_poll_started = True
+
+        async def _poll() -> None:
+            for _ in range(120):
+                try:
+                    info = await self.call_action("get_login_info")
+                except Exception:  # noqa: BLE001
+                    info = None
+                bot_id = ""
+                if isinstance(info, dict):
+                    bot_id = str(info.get("user_id") or info.get("self_id") or "")
+                if bot_id:
+                    ev = _SimpleSelfIDEvent(bot_id)
+                    for cb in list(self._ws_callbacks):
+                        try:
+                            res = cb(ev)
+                            if inspect.isawaitable(res):
+                                await res
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning("on_websocket_connection 回调失败: %s", e)
+                    return
+                await asyncio.sleep(1)
+
+        try:
+            from astrbot._bridge import loop as _loop_mod
+
+            asyncio.run_coroutine_threadsafe(_poll(), _loop_mod.get_loop())
+        except Exception as e:  # noqa: BLE001
+            logger.debug("on_websocket_connection 轮询启动失败: %s", e)
 
     def __getattr__(self, action: str) -> Callable:
         """将未显式定义的 OneBot API 动态转发到 call_action。
@@ -184,6 +246,14 @@ class _PlatformBotProxy:
             "context",
         ):
             raise AttributeError(action)
+        if action.startswith("on_"):
+            # 未知事件装饰器：同步 no-op（返回原函数），避免 @client.on_xxx
+            # 触发 __getattr__ 返回 async 包装而产生未 await 的协程。
+            def _unsupported(func: Callable) -> Callable:
+                logger.warning("平台代理不支持事件装饰器 %s，已忽略", action)
+                return func
+
+            return _unsupported
 
         async def _call(*args, **params) -> Any:
             merged = dict(params)

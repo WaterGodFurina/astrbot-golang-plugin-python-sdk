@@ -189,11 +189,25 @@ def dispatch(raw_event_json: str | bytes | dict | None) -> None:
             _run_handler(handler, event)
 
 
+class _WebSocketConnectionEvent:
+    """on_websocket_connection 回调事件的轻量载体（仅需 self_id）。"""
+
+    def __init__(self, self_id: str = "") -> None:
+        self.self_id = self_id
+
+    def __getitem__(self, key: str):
+        return getattr(self, key)
+
+    def get(self, key: str, default=None):
+        return getattr(self, key, default)
+
+
 class CQHttp:
     """OneBot v11 机器人客户端（宿主桥兼容层）。
 
     装饰器：on_message / on_notice / on_request / on_meta_event / on_event /
-    on_command / before_send / after_send。事件由宿主推送，run() 为 no-op。
+    on_command / before_send / after_send / on_websocket_connection。
+    事件由宿主推送，run() 为 no-op。
     """
 
     def __init__(self, *args, **kwargs):
@@ -203,6 +217,13 @@ class CQHttp:
         self._handlers: dict[str, list] = {"message": [], "notice": [], "request": [], "meta_event": []}
         # on_command：[(commands, handler)]
         self._command_handlers: list[tuple[list[str], Callable]] = []
+        # 平台实例 ID：宿主 CallAction 按适配器实例 ID 路由（多账号时不能写死
+        # 平台类型名 "aiocqhttp"，否则命中任意适配器）。事件构造时会用
+        # for_platform() 绑定真实实例 ID。
+        self._platform_id: str = str(kwargs.get("platform_id") or kwargs.get("id") or "aiocqhttp")
+        # on_websocket_connection 回调（宿主 WS 在 Go 侧，用轮询 get_login_info 触发）
+        self._ws_callbacks: list[Callable] = []
+        self._ws_poll_started = False
         _registry.register(self)
 
     # ---- 装饰器 ----
@@ -325,12 +346,67 @@ class CQHttp:
 
     # ---- API ----
     async def call_api(self, action: str, **params) -> dict:
-        """调用 OneBot v11 API（经宿主 Go 适配器）。"""
+        """调用 OneBot v11 API（经宿主 Go 适配器，按实例 ID 路由）。"""
         try:
-            return await get_bridge().call_action_async("aiocqhttp", action, params)
+            return await get_bridge().call_action_async(self._platform_id or "aiocqhttp", action, params)
         except Exception as e:  # noqa: BLE001
             logger.error(f"call_api {action} 失败: {e}")
             raise
+
+    def for_platform(self, platform_id: str) -> "CQHttp":
+        """返回绑定到指定平台实例 ID 的轻量副本。
+
+        共享 _handlers/_command_handlers/config（装饰器注册对全局可见），仅覆盖
+        _platform_id；**不注册进 _registry**，避免每次事件创建实例导致注册表
+        增长与 handler 重复分发。
+        """
+        clone = object.__new__(type(self))
+        clone.__dict__ = dict(self.__dict__)
+        clone._platform_id = str(platform_id or self._platform_id or "aiocqhttp")
+        clone.api = _APIProxy(clone)
+        return clone
+
+    def on_websocket_connection(self, func: Callable) -> Callable:
+        """WS 连接回调（宿主 WS 在 Go 侧，无法直接回调）。
+
+        同步装饰器（返回 func 本身，绝不产生未 await 的协程）；注册后后台轮询
+        get_login_info，一旦拿到 bot user_id 即用带 self_id 的事件触发回调，
+        以对齐 aiocqhttp 的 on_websocket_connection 语义。
+        """
+        self._ws_callbacks.append(func)
+        self._start_ws_poll()
+        return func
+
+    def _start_ws_poll(self) -> None:
+        if self._ws_poll_started:
+            return
+        self._ws_poll_started = True
+
+        async def _poll() -> None:
+            for _ in range(120):
+                try:
+                    info = await self.call_api("get_login_info")
+                except Exception:  # noqa: BLE001
+                    info = None
+                bot_id = ""
+                if isinstance(info, dict):
+                    bot_id = str(info.get("user_id") or info.get("self_id") or "")
+                if bot_id:
+                    ev = _WebSocketConnectionEvent(self_id=bot_id)
+                    for cb in list(self._ws_callbacks):
+                        try:
+                            res = cb(ev)
+                            if inspect.isawaitable(res):
+                                await res
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning("on_websocket_connection 回调失败: %s", e)
+                    return
+                await asyncio.sleep(1)
+
+        try:
+            asyncio.run_coroutine_threadsafe(_poll(), loop.get_loop())
+        except Exception as e:  # noqa: BLE001
+            logger.debug("on_websocket_connection 轮询启动失败: %s", e)
 
     async def send(self, ctx, message, **kwargs) -> dict:
         """发送消息。ctx 可以是 Event（按事件路由）或 dict(group_id=...)。
@@ -433,6 +509,14 @@ class CQHttp:
         （插件常直接调 client.<action>(...)）。"""
         if action.startswith("_") or action in ("call_api", "send", "run", "api", "config"):
             raise AttributeError(action)
+        if action.startswith("on_"):
+            # 未知事件装饰器：返回同步 no-op 装饰器（返回原函数），避免返回
+            # async 包装导致 @bot.on_xxx 产生未 await 的协程。
+            def _unsupported(func: Callable) -> Callable:
+                logger.warning("aiocqhttp 兼容层不支持事件装饰器 %s，已忽略", action)
+                return func
+
+            return _unsupported
 
         async def _call(**params) -> dict:
             return await self.call_api(action, **params)

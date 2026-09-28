@@ -590,7 +590,7 @@ class AstrMessageEvent(abc.ABC):
             # aiocqhttp 注册表无限增长（内存泄漏），且 dispatch 会把事件
             # 分发给所有历史实例，handler 被重复调用 N 次。
             event = AiocqhttpMessageEvent(
-                message_str or plain_text, obj, meta, conv_id, bot=CQHttp.get_default_bot()
+                message_str or plain_text, obj, meta, conv_id, bot=CQHttp.get_default_bot().for_platform(platform_id)
             )
         else:
             event = cls(message_str or plain_text, obj, meta, conv_id)
@@ -685,7 +685,7 @@ class AstrMessageEvent(abc.ABC):
             )
 
             event = AiocqhttpMessageEvent(
-                message_str or plain_text, obj, meta, conv_id, bot=CQHttp.get_default_bot()
+                message_str or plain_text, obj, meta, conv_id, bot=CQHttp.get_default_bot().for_platform(platform_id)
             )
         else:
             event = cls(message_str or plain_text, obj, meta, conv_id)
