@@ -70,12 +70,12 @@ class PluginServiceStub:
                 _registered_method=True)
         self.ListTools = channel.unary_unary(
                 '/astrbot.sdk.v1.PluginService/ListTools',
-                request_serializer=plugin__pb2.Empty.SerializeToString,
+                request_serializer=plugin__pb2.PluginRef.SerializeToString,
                 response_deserializer=plugin__pb2.ListToolsResponse.FromString,
                 _registered_method=True)
         self.ListWebApis = channel.unary_unary(
                 '/astrbot.sdk.v1.PluginService/ListWebApis',
-                request_serializer=plugin__pb2.Empty.SerializeToString,
+                request_serializer=plugin__pb2.PluginRef.SerializeToString,
                 response_deserializer=plugin__pb2.ListWebApisResponse.FromString,
                 _registered_method=True)
         self.HandleWebRequest = channel.unary_unary(
@@ -100,12 +100,12 @@ class PluginServiceStub:
                 _registered_method=True)
         self.GetConfigSchema = channel.unary_unary(
                 '/astrbot.sdk.v1.PluginService/GetConfigSchema',
-                request_serializer=plugin__pb2.Empty.SerializeToString,
+                request_serializer=plugin__pb2.PluginRef.SerializeToString,
                 response_deserializer=plugin__pb2.GetConfigSchemaResponse.FromString,
                 _registered_method=True)
         self.Cleanup = channel.unary_unary(
                 '/astrbot.sdk.v1.PluginService/Cleanup',
-                request_serializer=plugin__pb2.Empty.SerializeToString,
+                request_serializer=plugin__pb2.PluginRef.SerializeToString,
                 response_deserializer=plugin__pb2.Empty.FromString,
                 _registered_method=True)
         self.FeedCronJob = channel.unary_unary(
@@ -171,6 +171,7 @@ class PluginServiceServicer:
         __init__/initialize), which happens AFTER Register — so the host pulls the
         live tool list through this RPC instead of relying on the Register
         snapshot (aligned with Python AstrBot's runtime tool collection).
+        多租户（python-shared）：请求体带 plugin_id 定位目标插件；单插件进程留空。
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -285,12 +286,12 @@ def add_PluginServiceServicer_to_server(servicer, server):
             ),
             'ListTools': grpc.unary_unary_rpc_method_handler(
                     servicer.ListTools,
-                    request_deserializer=plugin__pb2.Empty.FromString,
+                    request_deserializer=plugin__pb2.PluginRef.FromString,
                     response_serializer=plugin__pb2.ListToolsResponse.SerializeToString,
             ),
             'ListWebApis': grpc.unary_unary_rpc_method_handler(
                     servicer.ListWebApis,
-                    request_deserializer=plugin__pb2.Empty.FromString,
+                    request_deserializer=plugin__pb2.PluginRef.FromString,
                     response_serializer=plugin__pb2.ListWebApisResponse.SerializeToString,
             ),
             'HandleWebRequest': grpc.unary_unary_rpc_method_handler(
@@ -315,12 +316,12 @@ def add_PluginServiceServicer_to_server(servicer, server):
             ),
             'GetConfigSchema': grpc.unary_unary_rpc_method_handler(
                     servicer.GetConfigSchema,
-                    request_deserializer=plugin__pb2.Empty.FromString,
+                    request_deserializer=plugin__pb2.PluginRef.FromString,
                     response_serializer=plugin__pb2.GetConfigSchemaResponse.SerializeToString,
             ),
             'Cleanup': grpc.unary_unary_rpc_method_handler(
                     servicer.Cleanup,
-                    request_deserializer=plugin__pb2.Empty.FromString,
+                    request_deserializer=plugin__pb2.PluginRef.FromString,
                     response_serializer=plugin__pb2.Empty.SerializeToString,
             ),
             'FeedCronJob': grpc.unary_unary_rpc_method_handler(
@@ -520,7 +521,7 @@ class PluginService:
             request,
             target,
             '/astrbot.sdk.v1.PluginService/ListTools',
-            plugin__pb2.Empty.SerializeToString,
+            plugin__pb2.PluginRef.SerializeToString,
             plugin__pb2.ListToolsResponse.FromString,
             options,
             channel_credentials,
@@ -547,7 +548,7 @@ class PluginService:
             request,
             target,
             '/astrbot.sdk.v1.PluginService/ListWebApis',
-            plugin__pb2.Empty.SerializeToString,
+            plugin__pb2.PluginRef.SerializeToString,
             plugin__pb2.ListWebApisResponse.FromString,
             options,
             channel_credentials,
@@ -682,7 +683,7 @@ class PluginService:
             request,
             target,
             '/astrbot.sdk.v1.PluginService/GetConfigSchema',
-            plugin__pb2.Empty.SerializeToString,
+            plugin__pb2.PluginRef.SerializeToString,
             plugin__pb2.GetConfigSchemaResponse.FromString,
             options,
             channel_credentials,
@@ -709,7 +710,7 @@ class PluginService:
             request,
             target,
             '/astrbot.sdk.v1.PluginService/Cleanup',
-            plugin__pb2.Empty.SerializeToString,
+            plugin__pb2.PluginRef.SerializeToString,
             plugin__pb2.Empty.FromString,
             options,
             channel_credentials,
