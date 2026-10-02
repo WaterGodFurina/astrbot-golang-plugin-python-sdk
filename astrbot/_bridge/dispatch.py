@@ -1019,8 +1019,9 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         ready = bridge_state == LifecycleStateMachine.RUNNING
         # 板块 5：附带本插件状态镜像（单插件进程 plugins 含 1 个元素；共享
         # Runtime 的 MultiTenantPluginService.HealthCheck 汇总全部插件）。
+        # plugin_id 由共享 Runtime 设置；单插件进程可能无该属性 → 安全读取。
         status = plugin_pb2.PluginStatus(
-            plugin_id=self.plugin_id or "",
+            plugin_id=getattr(self, "plugin_id", "") or "",
             plugin_name=self.plugin_name or "",
             state=bridge_state_to_plugin_state(bridge_state),
             health="NORMAL",
