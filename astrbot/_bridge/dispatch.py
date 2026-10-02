@@ -1012,9 +1012,27 @@ class PluginServiceServicer(plugin_pb2_grpc.PluginServiceServicer):
         # 被跳过，避免 RPC 超时（实例化失败时 _wait_instanced 等待 15s 仍
         # 会超过宿主 30s 超时的一半，且失败插件推送钩子无意义）。
         from astrbot._bridge.state import LifecycleStateMachine
+        from astrbot._runtime.states import bridge_state_to_plugin_state
+        import time as _time
 
-        ready = self.lifecycle.state() == LifecycleStateMachine.RUNNING
-        return plugin_pb2.HealthResponse(ok=ready, version=self.plugin_version)
+        bridge_state = self.lifecycle.state()
+        ready = bridge_state == LifecycleStateMachine.RUNNING
+        # 板块 5：附带本插件状态镜像（单插件进程 plugins 含 1 个元素；共享
+        # Runtime 的 MultiTenantPluginService.HealthCheck 汇总全部插件）。
+        status = plugin_pb2.PluginStatus(
+            plugin_id=self.plugin_id or "",
+            plugin_name=self.plugin_name or "",
+            state=bridge_state_to_plugin_state(bridge_state),
+            health="NORMAL",
+            last_activity=float(getattr(self, "_last_activity", 0.0)),
+            error="",
+            generation=int(getattr(self, "_generation", 0)),
+        )
+        return plugin_pb2.HealthResponse(
+            ok=ready,
+            version=self.plugin_version,
+            plugins=[status],
+        )
 
     def SetLogLevel(self, request, context) -> plugin_pb2.Empty:
         """调整插件子进程的日志级别（宿主 per-plugin 覆盖）。

@@ -76,3 +76,29 @@ ISOLATION_TARGET_STATES = frozenset(
         PluginHealthState.ISOLATED,
     }
 )
+
+
+# bridge 生命周期状态（LifecycleStateMachine）→ PluginStatus.state 映射。
+# 方案里的插件状态是 ACTIVE/IDLE/SLEEPING/UNLOADED/ERROR；bridge 的是
+# CREATED..RUNNING..STOPPED。这里给出上报给 Go 的规范化映射。
+_BRIDGE_STATE_TO_PLUGIN_STATE = {
+    "CREATED": "LOADING",
+    "BRIDGE_READY": "LOADING",
+    "GRPC_READY": "LOADING",
+    "HANDSHAKE_SENT": "LOADING",
+    "REGISTERING": "LOADING",
+    "REGISTERED": "LOADING",
+    "INSTANTIATING": "LOADING",
+    "RUNNING": "ACTIVE",
+    "STOPPING": "UNLOADED",
+    "STOPPED": "UNLOADED",
+}
+
+
+def bridge_state_to_plugin_state(bridge_state: str) -> str:
+    """把 LifecycleStateMachine 状态映射为上报给 Go 的插件状态字符串。
+
+    未知状态按 LOADING 处理（安全：不误报为 ACTIVE）。ERROR 由调用方在
+    异常路径显式给出。
+    """
+    return _BRIDGE_STATE_TO_PLUGIN_STATE.get(bridge_state, "LOADING")

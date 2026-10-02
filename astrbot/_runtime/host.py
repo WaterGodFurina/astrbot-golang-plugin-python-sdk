@@ -133,10 +133,23 @@ class MultiTenantPluginService(plugin_pb2_grpc.PluginServiceServicer):
         return self._dispatch_or_single(request, "FeedCronJob", context)
 
     def HealthCheck(self, request, context):
-        """Runtime 级健康检查（不按插件路由）。"""
+        """Runtime 级健康检查：汇总共享 Runtime 内全部插件的状态（板块 5）。"""
         from astrbot._bridge.gen import plugin_pb2
 
-        return plugin_pb2.HealthResponse(ok=True, load=0.0, version="")
+        statuses = []
+        for s in self._registry.all():
+            statuses.append(
+                plugin_pb2.PluginStatus(
+                    plugin_id=s.plugin_id,
+                    plugin_name=s.plugin_name,
+                    state=s.lifecycle.value,
+                    health=s.health.value,
+                    last_activity=float(s.last_activity),
+                    error=s.error,
+                    generation=int(s.generation),
+                )
+            )
+        return plugin_pb2.HealthResponse(ok=True, load=0.0, version="", plugins=statuses)
 
 
 class SharedRuntimeHost:
