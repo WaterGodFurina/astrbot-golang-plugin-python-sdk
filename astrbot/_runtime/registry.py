@@ -109,6 +109,25 @@ class PluginSession:
         """记录一次活动（用于 idle 判定）。"""
         self.last_activity = time.time()
 
+    def init_scoped_registries(self) -> None:
+        """为共享 Runtime 初始化本插件的独立 registry 实例。
+
+        仅 python-shared 下调用（每个插件一套独立 star_map / star_handlers_registry
+        / llm_tools，避免跨插件串台）。python-grpc 单插件进程**不要**调用——
+        保持这些字段 None，读写回退到模块级全局，行为与旧版一致。
+
+        必须是「新建实例」，不能从全局 copy() 或浅拷贝——否则会把已有插件的
+        handler/tool 污染进本插件（板块 4 明确禁止那种做法）。
+        """
+        self.star_map = {}
+        self.star_registry = []
+        from astrbot.core.star.star_handler import StarHandlerRegistry
+
+        self.star_handlers_registry = StarHandlerRegistry()
+        from astrbot.core.provider.func_tool_manager import FunctionToolManager
+
+        self.llm_tools = FunctionToolManager()
+
     def reset_failure(self) -> None:
         """恢复为正常：清除故障标记（ISOLATED 不是永久处罚）。"""
         self.health = PluginHealthState.NORMAL
