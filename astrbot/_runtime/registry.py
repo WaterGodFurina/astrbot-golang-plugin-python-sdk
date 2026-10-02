@@ -96,6 +96,15 @@ class PluginSession:
     # 任务登记
     tasks: TaskRegistry = field(default_factory=TaskRegistry)
 
+    # ── plugin-scoped registry（共享 Runtime 多插件隔离）────────────
+    # 仅保存「不同插件之间不应该互相看到」的状态。None = 未设置，读写时
+    # 回退到 SDK 的模块级全局（单插件进程 / 尚未初始化）。初始化时机由
+    # Runtime Host 在加载插件时填充（每个 session 一个独立实例）。
+    star_map: dict | None = None
+    star_registry: list | None = None
+    star_handlers_registry: Any = None
+    llm_tools: Any = None
+
     def touch(self) -> None:
         """记录一次活动（用于 idle 判定）。"""
         self.last_activity = time.time()

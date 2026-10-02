@@ -1,6 +1,37 @@
-"""Python 插件加载器：import 插件模块、发现 Star 子类、实例化、生命周期。"""
+"""Python 插件加载器：import 插件模块、发现 Star 子类、实例化、生命周期。
+
+解释器级隔离边界（板块 4 边界审计，务必准确描述，不得虚假宣称隔离）：
+
+本模块在加载插件时会修改**解释器级**状态：
+- ``sys.path`` 注入插件目录 / 父目录（供相对导入 / 子包发现）；
+- ``sys.modules`` 写入插件包与 ``<pkg>.main`` 模块名；
+- ``path_compat.install`` 会 monkey-patch ``builtins.open`` / ``io.open`` /
+  ``os.stat`` / ``os.lstat`` / ``os.listdir`` / ``os.scandir``，并用**单例全局**
+  ``_legacy_pattern`` / ``_real_name`` 保存重定向规则。
+
+``contextvars`` / PluginSession 只能解决「逻辑级插件归属」（registry / handler /
+tool 等），**不能**隔离上述解释器级状态：
+
+- ``sys.path`` / ``path_compat`` 的全局 hook 会在同进程的所有插件间共享；
+- ``sys.modules`` 是全局模块命名空间，同名模块跨插件会互相覆盖；
+- ``path_compat`` 的单例重定向规则只能承载“一个”旧目录映射，多插件会冲突。
+
+因此：
+
+- ``python-grpc``（一插件一进程）：这些解释器级状态天然隔离，本模块现有
+  「sys.path 注入不做清理（进程退出即回收）」的约定**保持不变**，旧插件零侵入。
+- ``python-shared``（共享 Runtime）：对 ``sys.path`` 这类**可恢复的临时状态**
+  采用 ``scoped_sys_path`` 保存 / 恢复（best-effort，降低污染风险）；而
+  ``sys.modules`` 同名冲突、``path_compat`` 全局 hook 等**无法安全隔离**的情形，
+  明确交给 ``python-grpc`` / ``python-isolated``（不伪造 per-plugin
+  ``sys.modules``，不在本层伪装成真正的隔离）。
+
+两种方案并存，不要混淆：有 current PluginSession 时走共享 Runtime 的 best-effort
+路径；无 session（单插件进程）时保持原有行为。
+"""
 from __future__ import annotations
 
+import contextlib
 import importlib
 import inspect
 import logging
@@ -21,6 +52,45 @@ logger = logging.getLogger("astrbot.loader")
 # （正常消息处理）不涉及这些调用。
 INIT_TIMEOUT = float(os.environ.get("ASTRBOT_PLUGIN_INIT_TIMEOUT", "60"))
 TERM_TIMEOUT = float(os.environ.get("ASTRBOT_PLUGIN_TERM_TIMEOUT", "30"))
+
+
+@contextlib.contextmanager
+def scoped_sys_path(*paths: str):
+    """临时把 paths 注入 ``sys.path``，退出时**恢复原状**。
+
+    仅用于共享 Runtime（python-shared）下「可恢复的临时状态」：插件 import
+    期间需要其目录 / 父目录可被解析，导入完成后恢复 sys.path，降低插件之间
+    的路径污染。传入的路径会转绝对路径并去重（重复项不二次插入）。
+
+    边界审计：这不等于解释器级隔离。``sys.modules`` 仍为全局命名空间，
+    ``path_compat`` 的全局 hook / 单例重定向仍进程共享；依赖同名不同版本模块
+    或 path_compat 的插件应使用 ``python-grpc`` / ``python-isolated``。
+
+    用法约束：**只应包住 import 阶段**（加载/发现插件模块），不要包住整个
+    插件生命周期——否则 sys.path 会一直挂着插件路径，失去「加载完即恢复」的
+    隔离意义。
+
+    单插件进程（python-grpc）沿用现有「不清理」约定，可不使用本工具。
+    """
+    saved = list(sys.path)
+    added = []
+    for p in paths:
+        ap = os.path.abspath(p)
+        if ap not in sys.path:
+            sys.path.insert(0, ap)
+            added.append(ap)
+    try:
+        yield
+    finally:
+        # 只移除本次加入的项，保留其它代码插入的路径。
+        for ap in added:
+            try:
+                sys.path.remove(ap)
+            except ValueError:
+                pass
+        # 兜底：即使因异常导致移除不完整，也恢复原顺序。
+        if sys.path != saved:
+            sys.path[:] = saved
 
 
 def sanitize_module_name(name: str) -> str:
@@ -165,38 +235,39 @@ def load_plugin_import(plugin_dir: str, context: Context) -> StarMetadata | None
     is_package = os.path.exists(os.path.join(plugin_dir, "__init__.py"))
     has_main_py = os.path.exists(os.path.join(plugin_dir, "main.py"))
 
-    if is_package and has_main_py:
-        # 包式插件（Python AstrBot 生态惯例）：目录名.main，相对导入可用。
-        # 父目录进 sys.path 供包内 import 使用。
-        # 约定：一进程一插件，sys.path 注入不做清理（进程退出即回收）。
-        sys.path.insert(0, os.path.dirname(plugin_dir))
-        module = _load_package_plugin(plugin_dir, os.path.basename(plugin_dir))
-    else:
-        # 简单插件：main.py 作为顶层模块或 namespace 包子模块。
-        # 目录/父目录进 sys.path，供相对导入（namespace 包）与子包发现。
-        # 约定：一进程一插件，sys.path 注入不做清理（进程退出即回收）。
-        sys.path.insert(0, os.path.dirname(plugin_dir))
-        sys.path.insert(0, plugin_dir)
-        if has_main_py:
-            if is_package:
-                module = _load_package_plugin(plugin_dir, os.path.basename(plugin_dir))
-            else:
-                # 无 __init__.py：namespace package 加载（对齐 Python AstrBot
-                # 对 box 这类插件的支持：main.py 相对导入可用）。
-                module = _load_namespace_package_plugin(
-                    plugin_dir, os.path.basename(plugin_dir)
-                )
-        elif os.path.exists(os.path.join(plugin_dir, "__init__.py")):
-            module = importlib.import_module(sanitize_module_name(os.path.basename(plugin_dir)))
+    # 只把「模块加载」阶段放进 scoped_sys_path：插件目录/父目录在 import 期间
+    # 可被解析，加载完成后恢复 sys.path（python-shared 下避免路径永久污染）。
+    # 相对导入（from .core.x import）经父包 __path__（sys.modules 中的 pkg 条目）
+    # 解析，不依赖 sys.path，因此加载后恢复是安全的；依赖「运行期绝对导入子
+    # 模块」的插件在 python-shared 下不受支持（应走 python-grpc/python-isolated，
+    # 见模块级边界注释）。
+    with scoped_sys_path(plugin_dir, os.path.dirname(plugin_dir)):
+        if is_package and has_main_py:
+            # 包式插件（Python AstrBot 生态惯例）：目录名.main，相对导入可用。
+            # 父目录进 sys.path 供包内 import 使用。
+            module = _load_package_plugin(plugin_dir, os.path.basename(plugin_dir))
         else:
-            for name in ("main", "plugin", os.path.basename(plugin_dir)):
-                if os.path.exists(os.path.join(plugin_dir, f"{name}.py")) or os.path.isdir(
-                    os.path.join(plugin_dir, name)
-                ):
-                    module = importlib.import_module(sanitize_module_name(name))
-                    break
+            # 简单插件：main.py 作为顶层模块或 namespace 包子模块。
+            if has_main_py:
+                if is_package:
+                    module = _load_package_plugin(plugin_dir, os.path.basename(plugin_dir))
+                else:
+                    # 无 __init__.py：namespace package 加载（对齐 Python AstrBot
+                    # 对 box 这类插件的支持：main.py 相对导入可用）。
+                    module = _load_namespace_package_plugin(
+                        plugin_dir, os.path.basename(plugin_dir)
+                    )
+            elif os.path.exists(os.path.join(plugin_dir, "__init__.py")):
+                module = importlib.import_module(sanitize_module_name(os.path.basename(plugin_dir)))
             else:
-                module = None
+                for name in ("main", "plugin", os.path.basename(plugin_dir)):
+                    if os.path.exists(os.path.join(plugin_dir, f"{name}.py")) or os.path.isdir(
+                        os.path.join(plugin_dir, name)
+                    ):
+                        module = importlib.import_module(sanitize_module_name(name))
+                        break
+                else:
+                    module = None
     if module is None:
         raise ImportError(f"无法在 {plugin_dir} 找到插件入口（main.py 或同名包）")
 

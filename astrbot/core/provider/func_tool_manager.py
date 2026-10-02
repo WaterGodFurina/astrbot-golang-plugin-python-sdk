@@ -946,8 +946,25 @@ class FunctionToolManager:
         }
 
 
-llm_tools = FunctionToolManager()
-"""全局 LLM 函数工具注册表"""
+_global_llm_tools = FunctionToolManager()
+"""全局 LLM 函数工具注册表（legacy fallback：单插件进程直接使用）"""
+
+# 共享 Runtime 兼容桥：有 current PluginSession 时读写其持有的独立
+# FunctionToolManager 实例，否则回退到全局（python-grpc 单插件进程）。
+from astrbot._runtime.context import resolve_session_scoped  # noqa: E402
+from astrbot._runtime.proxy import SessionScopedProxy  # noqa: E402
+
+llm_tools = SessionScopedProxy(
+    lambda: resolve_session_scoped("llm_tools", None),
+    _global_llm_tools,
+    name="llm_tools",
+)
+
+
+def get_llm_tools() -> FunctionToolManager:
+    """返回当前插件的工具管理器；无 session 时返回模块级全局（legacy）。"""
+    resolved = resolve_session_scoped("llm_tools", None)
+    return resolved if resolved is not None else _global_llm_tools
 
 # 别名（对齐原版 func_tool_manager.py 末尾的 FuncCall = FunctionToolManager）。
 FuncCall = FunctionToolManager

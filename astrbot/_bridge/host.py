@@ -1621,7 +1621,15 @@ _bridge: HostBridge | None = None
 def set_bridge(bridge: HostBridge) -> None:
     """把当前生效的宿主桥实例注册为模块级单例（server.py 初始化 bridge 后
     调用）。兼容层（botpy/telegram）经 get_bridge() 获取同一实例，否则
-    plugin_name 恒空导致桥接钩子注册失败。"""
+    plugin_name 恒空导致桥接钩子注册失败。
+
+    共享 Runtime（python-shared）契约：HostBridge 是 **Runtime 级共享对象**
+    （channel / broker / capabilities / RPC client 多插件共用，不复制成
+    per-plugin 实例）。插件身份（plugin_name/plugin_id）由调用链**显式传参**
+    （如 get_config(plugin_name) 的 plugin_name 参数），不从 bridge 取——
+    单插件进程（python-grpc）下 bridge.plugin_name 由 server.py 兜底设置；
+    共享 Runtime 下应经 current_plugin_identity() 从 PluginSession 取。
+    """
     global _bridge
     _bridge = bridge
 
@@ -1631,3 +1639,18 @@ def get_bridge() -> HostBridge:
     if _bridge is None:
         _bridge = HostBridge()
     return _bridge
+
+
+def current_plugin_identity() -> tuple[str, str]:
+    """返回 (plugin_id, plugin_name) 供共享 Runtime 的宿主反向调用显式传参。
+
+    有 current PluginSession → 取其身份（多插件隔离正确）；无 session（单
+    插件进程）→ 回退 bridge 上由 server.py 设置的 plugin_name / plugin_id。
+    """
+    from astrbot._runtime.context import get_current_session
+
+    session = get_current_session()
+    if session is not None:
+        return session.plugin_id, session.plugin_name
+    b = get_bridge()
+    return b.plugin_id, b.plugin_name

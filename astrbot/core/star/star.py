@@ -9,9 +9,40 @@ if TYPE_CHECKING:
     from .base import Star
 
 
-star_registry: list["StarMetadata"] = []
-star_map: dict[str, "StarMetadata"] = {}
+# ── plugin-scoped registry（共享 Runtime 兼容桥）─────────────────────
+# 保留模块级对象作为 **legacy fallback**：python-grpc 单插件进程（无
+# current PluginSession）直接读写这些全局；python-shared 多插件 Runtime 下，
+# 业务代码访问 `star_map` / `star_registry` 时经 SessionScopedProxy 路由到
+# 当前 PluginSession 持有的独立实例（见 astrbot/_runtime/proxy.py）。
+_global_star_registry: list["StarMetadata"] = []
+_global_star_map: dict[str, "StarMetadata"] = {}
 """key 是模块路径，__module__"""
+
+from astrbot._runtime.context import resolve_session_scoped  # noqa: E402
+from astrbot._runtime.proxy import SessionScopedProxy  # noqa: E402
+
+star_registry = SessionScopedProxy(
+    lambda: resolve_session_scoped("star_registry", None),
+    _global_star_registry,
+    name="star_registry",
+)
+star_map = SessionScopedProxy(
+    lambda: resolve_session_scoped("star_map", None),
+    _global_star_map,
+    name="star_map",
+)
+
+
+def get_star_map() -> dict[str, "StarMetadata"]:
+    """返回当前插件的 star_map；无 session 时返回模块级全局（legacy）。"""
+    resolved = resolve_session_scoped("star_map", None)
+    return resolved if resolved is not None else _global_star_map
+
+
+def get_star_registry() -> list["StarMetadata"]:
+    """返回当前插件的 star_registry；无 session 时返回模块级全局（legacy）。"""
+    resolved = resolve_session_scoped("star_registry", None)
+    return resolved if resolved is not None else _global_star_registry
 
 
 @dataclass

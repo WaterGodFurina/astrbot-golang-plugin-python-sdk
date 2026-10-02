@@ -227,8 +227,25 @@ class StarHandlerRegistry:
         }
 
 
-star_handlers_registry = StarHandlerRegistry()
-"""全局 Star Handler 注册表"""
+_global_star_handlers_registry = StarHandlerRegistry()
+"""全局 Star Handler 注册表（legacy fallback：单插件进程直接使用）"""
+
+# 共享 Runtime 兼容桥：有 current PluginSession 时读写其持有的独立
+# StarHandlerRegistry 实例，否则回退到全局（python-grpc 单插件进程）。
+from astrbot._runtime.context import resolve_session_scoped  # noqa: E402
+from astrbot._runtime.proxy import SessionScopedProxy  # noqa: E402
+
+star_handlers_registry = SessionScopedProxy(
+    lambda: resolve_session_scoped("star_handlers_registry", None),
+    _global_star_handlers_registry,
+    name="star_handlers_registry",
+)
+
+
+def get_star_handlers_registry() -> StarHandlerRegistry:
+    """返回当前插件的 handler 注册表；无 session 时返回模块级全局（legacy）。"""
+    resolved = resolve_session_scoped("star_handlers_registry", None)
+    return resolved if resolved is not None else _global_star_handlers_registry
 
 
 def is_virtual_handler(md: StarHandlerMetadata) -> bool:

@@ -147,6 +147,13 @@ def install(plugin_dir: str) -> None:
 
     插件目录名为 <name>_<lang> 且源码中检测到硬编码的 <name> 旧路径时
     才安装；否则为 no-op，不引入任何运行时开销。
+
+    边界（板块 4 审计）：本函数 monkey-patch 全局 ``builtins.open`` / ``io.open``
+    / ``os.stat`` / ``os.lstat`` / ``os.listdir`` / ``os.scandir``，并用**单例
+    全局** ``_legacy_pattern`` / ``_real_name`` 保存重定向规则——只能承载“一个”
+    旧目录映射。因此它是解释器级、**无法在共享 Runtime 中 per-plugin 隔离**；
+    需要 path_compat 的插件应使用 ``python-grpc`` / ``python-isolated``（一插件
+    一进程）。``python-shared`` 下多插件同时依赖 path_compat 会互相覆盖。
     """
     global _legacy_pattern, _real_name
     real = os.path.realpath(plugin_dir)

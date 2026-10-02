@@ -63,6 +63,8 @@ class TestPluginRegistry(unittest.TestCase):
 
     def test_sessions_are_isolated(self):
         """A 的注册信息不应出现在 B（防止共用解释器后串台）。"""
+        from astrbot._runtime.registry import PluginRegistry
+
         reg = PluginRegistry()
         a = self._session("a")
         b = self._session("b")
