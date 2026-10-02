@@ -16,10 +16,9 @@ from __future__ import annotations
 import logging
 import os
 import sys
-import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 
+from astrbot._bridge import bootstrap
 from astrbot._bridge.deps_resolver import install_import_resolver
 
 # 懒加载依赖解析器必须在一切重依赖 import（grpc 等）之前挂上：
@@ -34,15 +33,7 @@ logger = logging.getLogger("astrbot")
 
 
 def _setup_logging() -> None:
-    level = os.environ.get("ASTRBOT_PLUGIN_LOG_LEVEL", "INFO").upper()
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(
-        logging.Formatter("[%(asctime)s] [%(levelname)s] %(name)s: %(message)s")
-    )
-    root = logging.getLogger()
-    root.handlers.clear()
-    root.addHandler(handler)
-    root.setLevel(getattr(logging, level, logging.INFO))
+    bootstrap.setup_logging()
 
 
 def _startup_failed(phase: str, exc: BaseException, plugin_dirname: str) -> int:
@@ -74,26 +65,7 @@ def main() -> int:
     #    venv 标记。握手行打印前不得碰 stdout（进度/错误全走 stderr）。
     try:
         progress.emit_phase("dependency_check")
-        from astrbot._bridge import go_handshake
-
-        go_handshake.check_magic_cookie()
-        go_handshake.check_no_multiplex()
-        import grpc  # noqa: F401  （grpc 缺失在此失败并报 STARTUP_ERROR）
-
-        if sys.version_info < (3, 10):
-            raise RuntimeError(
-                f"需要 Python >= 3.10，当前 {sys.version_info.major}.{sys.version_info.minor}"
-            )
-        # venv 标记：宿主准备的 venv 中 sys.prefix != base_prefix；
-        # ASTRBOT_PLUGIN_DATA_DIR 缺失说明非宿主启动（本地调试），仅告警。
-        in_venv = getattr(sys, "base_prefix", sys.prefix) != sys.prefix
-        if os.environ.get("ASTRBOT_PLUGIN_DATA_DIR"):
-            logger.info(
-                f"环境检查通过: python={sys.version.split()[0]} venv={in_venv} "
-                f"data_dir={os.environ['ASTRBOT_PLUGIN_DATA_DIR']}"
-            )
-        else:
-            logger.warning("ASTRBOT_PLUGIN_DATA_DIR 未设置（非宿主启动？）")
+        bootstrap.check_dependencies(plugin_dirname)
     except Exception as e:
         return _startup_failed("dependency_check", e, plugin_dirname)
 
@@ -102,18 +74,14 @@ def main() -> int:
     #    __init__/get_config() 会同步调宿主（GetConfig）。
     try:
         progress.emit_phase("bridge_init")
-        from astrbot._bridge import loop as event_loop
+        bootstrap.start_event_loop()
 
-        event_loop.start()
-
-        from astrbot._bridge.host import HostBridge, set_bridge
         from astrbot.core.star.context import set_host_bridge
 
-        bridge = HostBridge()
+        bridge = bootstrap.install_bridge()
         bridge.plugin_name = plugin_dirname
         bridge.plugin_id = ""
         set_host_bridge(bridge)
-        threading.Thread(target=bridge.preconnect, daemon=True).start()
         lifecycle.set(LifecycleStateMachine.BRIDGE_READY)
     except Exception as e:
         return _startup_failed("bridge_init", e, plugin_dirname)
@@ -124,52 +92,21 @@ def main() -> int:
     #    这个 ConnInfo。server 未就绪 → dial 等 ConnInfo 超时 → 插件卡死。
     try:
         progress.emit_phase("grpc_start")
-        from astrbot._bridge.broker import get_broker
         from astrbot._bridge.dispatch import PluginServiceServicer
-        from astrbot._bridge.gen import goplugin_pb2_grpc, plugin_pb2_grpc
-        from astrbot._bridge.stdio import register_grpc_stdio
+        from astrbot._bridge.gen import plugin_pb2_grpc
 
         servicer = PluginServiceServicer(plugin_dirname, "", "", "", plugin_dir)
         # 复用 servicer 的状态机（避免 server 侧与 dispatch 侧两套互不相通的
         # 状态机）；先把当前状态（BRIDGE_READY）平移过去，后续推进统一生效。
         servicer.lifecycle.set(lifecycle.state())
         lifecycle = servicer.lifecycle
-        server = grpc.server(
-            ThreadPoolExecutor(max_workers=16),
-            options=[
-                ("grpc.max_send_message_length", 128 * 1024 * 1024),
-                ("grpc.max_receive_message_length", 128 * 1024 * 1024),
-            ],
-        )
-        plugin_pb2_grpc.add_PluginServiceServicer_to_server(servicer, server)
-        goplugin_pb2_grpc.add_GRPCBrokerServicer_to_server(get_broker(), server)
-        # go-plugin 宿主握手后自动连 GRPCStdio：缺服务 → Method not found
-        #（虽降级但破坏 stdio 日志流镜像）。补上保活空流实现。
-        register_grpc_stdio(server)
 
-        # 宿主通过 TCP 连入（grpc-python 只支持非阻塞 serve）
-        bound_port = None
-        min_port, max_port = go_handshake.port_range()
-        if min_port and max_port:
-            for port in range(min_port, max_port + 1):
-                try:
-                    bound = server.add_insecure_port(f"127.0.0.1:{port}")
-                except Exception:
-                    continue
-                if bound:  # grpc-python 绑定失败不抛异常，返回 0
-                    bound_port = bound
-                    break
-            if not bound_port:
-                raise RuntimeError(
-                    f"无法在 PLUGIN_MIN_PORT={min_port}..PLUGIN_MAX_PORT={max_port} 范围内绑定端口"
-                )
-        else:
-            bound_port = server.add_insecure_port("127.0.0.1:0")
-        server.start()
+        def _register(server):
+            plugin_pb2_grpc.add_PluginServiceServicer_to_server(servicer, server)
+
+        server, _bound_port = bootstrap.start_grpc_server(_register)
         lifecycle.set(LifecycleStateMachine.GRPC_READY)
-        go_handshake.print_handshake_line("127.0.0.1", bound_port)
         lifecycle.set(LifecycleStateMachine.HANDSHAKE_SENT)
-        logger.info("插件桥接服务已启动，等待宿主连接")
     except Exception as e:
         return _startup_failed("grpc_start", e, plugin_dirname)
 
@@ -250,18 +187,7 @@ def main() -> int:
     #    发 SIGTERM，默认行为直接终止进程 → finally 里的清理（server.stop /
     #    event_loop.stop / 状态机 STOPPED）不会执行，插件 terminate 钩子也不
     #    会被调用。转成 SystemExit 走正常清理路径。
-    try:
-        import signal
-
-        def _handle_sigterm(signum, frame):
-            logger.info(f"收到信号 {signum}，进入清理流程")
-            raise SystemExit(0)
-
-        if threading.current_thread() is threading.main_thread():
-            signal.signal(signal.SIGTERM, _handle_sigterm)
-            signal.signal(signal.SIGINT, _handle_sigterm)
-    except (ImportError, ValueError, OSError):
-        pass  # 非主线程/受限环境：跳过信号注册，保持默认终止行为
+    bootstrap.install_signal_handlers()
 
     try:
         progress.emit_phase("running")

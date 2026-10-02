@@ -113,6 +113,11 @@ class PluginServiceStub:
                 request_serializer=plugin__pb2.FeedCronJobRequest.SerializeToString,
                 response_deserializer=plugin__pb2.FeedCronJobResponse.FromString,
                 _registered_method=True)
+        self.ManagePlugin = channel.unary_unary(
+                '/astrbot.sdk.v1.PluginService/ManagePlugin',
+                request_serializer=plugin__pb2.ManagePluginRequest.SerializeToString,
+                response_deserializer=plugin__pb2.ManagePluginResponse.FromString,
+                _registered_method=True)
 
 
 class PluginServiceServicer:
@@ -251,6 +256,21 @@ class PluginServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ManagePlugin(self, request, context):
+        """ManagePlugin（python-shared 共享 Runtime 多租户）管理共享进程内的插件
+        成员，使 Go Runtime Manager 能在不重启整个 Runtime 的前提下按插件
+        加载/卸载（对齐方案「Unload/Reload → 通知 Runtime 卸载单插件，非杀
+        进程」）：
+        action="load"：登记并 import 插件（等价单插件 server.py 的阶段 A），
+        随后宿主对同一 plugin_id 调 Register 触发实例化；
+        action="unload"：卸载单个插件（terminate + 清理 session），不影响
+        共享 Runtime 内其它插件。
+        单插件进程（python-grpc / python-isolated）不使用，返回 UNIMPLEMENTED。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_PluginServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -328,6 +348,11 @@ def add_PluginServiceServicer_to_server(servicer, server):
                     servicer.FeedCronJob,
                     request_deserializer=plugin__pb2.FeedCronJobRequest.FromString,
                     response_serializer=plugin__pb2.FeedCronJobResponse.SerializeToString,
+            ),
+            'ManagePlugin': grpc.unary_unary_rpc_method_handler(
+                    servicer.ManagePlugin,
+                    request_deserializer=plugin__pb2.ManagePluginRequest.FromString,
+                    response_serializer=plugin__pb2.ManagePluginResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -739,6 +764,33 @@ class PluginService:
             '/astrbot.sdk.v1.PluginService/FeedCronJob',
             plugin__pb2.FeedCronJobRequest.SerializeToString,
             plugin__pb2.FeedCronJobResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ManagePlugin(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/astrbot.sdk.v1.PluginService/ManagePlugin',
+            plugin__pb2.ManagePluginRequest.SerializeToString,
+            plugin__pb2.ManagePluginResponse.FromString,
             options,
             channel_credentials,
             insecure,

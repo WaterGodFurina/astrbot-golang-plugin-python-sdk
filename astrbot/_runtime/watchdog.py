@@ -78,6 +78,7 @@ class PluginWatchdog:
         self._on_unhealthy = on_unhealthy
         self._windows: dict[str, _FailureWindow] = {}
         self._lock = threading.Lock()
+        self._heartbeat_at: float = 0.0
 
     # ---- 事件上报 ----
     def report(
@@ -150,6 +151,19 @@ class PluginWatchdog:
         """清除某插件的失败窗口（恢复 / 卸载 / 更新后调用）。"""
         with self._lock:
             self._windows.pop(plugin_id, None)
+
+    # ---- Runtime 心跳（进程级，方案第 6 节）----
+    # Python Watchdog **不**负责检测 Runtime 整体崩溃（SIGSEGV/OOM/os._exit
+    # 时它自身也已消失）；进程级监控由 Go Runtime Manager 负责。此处只提供
+    # 一个**心跳时间戳**，由 Runtime 主循环低频刷新并经 HealthCheck 上报，供
+    # Go 侧判断 Runtime 是否卡死（连接存活但心跳停滞 = 疑似 hang）。
+    def heartbeat(self) -> None:
+        """刷新 Runtime 心跳时间戳（Runtime 主循环周期调用）。"""
+        self._heartbeat_at = time.time()
+
+    def last_heartbeat(self) -> float:
+        """返回最近一次心跳时间（Unix 秒；0 = 从未心跳）。"""
+        return getattr(self, "_heartbeat_at", 0.0)
 
     def snapshot(self, plugin_id: str) -> dict:
         with self._lock:

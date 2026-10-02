@@ -29,8 +29,10 @@ from astrbot._runtime.context import (
     reset_current_session,
     set_current_session,
 )
+from astrbot._runtime.dispatcher import Dispatcher, PluginDispatchError
 from astrbot._runtime.registry import PluginRegistry, PluginSession
 from astrbot._runtime.states import PluginHealthState, PluginLifecycleState
+from astrbot._runtime.watchdog import PluginWatchdog
 
 if TYPE_CHECKING:
     from astrbot._bridge.dispatch import PluginServiceServicer
@@ -43,6 +45,18 @@ def _plugin_id_from_request(request) -> str:
     return getattr(request, "plugin_id", "") or ""
 
 
+def _manage_ok():
+    from astrbot._bridge.gen import plugin_pb2
+
+    return plugin_pb2.ManagePluginResponse(ok=True)
+
+
+def _manage_err(message: str):
+    from astrbot._bridge.gen import plugin_pb2
+
+    return plugin_pb2.ManagePluginResponse(ok=False, error=message)
+
+
 class MultiTenantPluginService(plugin_pb2_grpc.PluginServiceServicer):
     """统一 PluginService 入口：按 plugin_id 路由到对应插件的 servicer。
 
@@ -50,29 +64,39 @@ class MultiTenantPluginService(plugin_pb2_grpc.PluginServiceServicer):
     与直接使用 PluginServiceServicer 等价。
     """
 
-    def __init__(self, registry: PluginRegistry, servicers: dict[str, "PluginServiceServicer"]) -> None:
+    def __init__(
+        self,
+        registry: PluginRegistry,
+        servicers: dict[str, "PluginServiceServicer"],
+        dispatcher: Dispatcher | None = None,
+        on_registered=None,
+        on_manage=None,
+        heartbeat=None,
+    ) -> None:
         self._registry = registry
         self._servicers = servicers
+        self._dispatcher = dispatcher or Dispatcher(registry, servicers)
+        # Register 完成后触发实例化（共享 Runtime 下 server.py 的 instantiate
+        # 阶段由 host 回调驱动）。
+        self._on_registered = on_registered
+        # ManagePlugin(load/unload) 处理回调（共享 Runtime 成员管理）。
+        self._on_manage = on_manage
+        # Runtime 心跳读取器（返回 Unix 秒），供 HealthCheck 上报。
+        self._heartbeat = heartbeat
 
     # ---- 路由核心 ----
     def _route(self, plugin_id: str):
         """返回 (session, servicer)；找不到时抛 KeyError。"""
-        session = self._registry.get(plugin_id)
-        if session is None:
-            raise KeyError(f"plugin_id {plugin_id!r} 不在共享 Runtime 中")
-        servicer = self._servicers.get(plugin_id)
-        if servicer is None:
-            raise KeyError(f"plugin_id {plugin_id!r} 没有对应 servicer")
-        return session, servicer
+        return self._dispatcher.route(plugin_id)
 
     def _dispatch(self, plugin_id: str, method: str, *args, **kwargs):
-        """设 ContextVar → 委托 → reset（异常也 reset）。"""
-        session, servicer = self._route(plugin_id)
-        token = set_current_session(session)
+        """经 Dispatcher 设 ContextVar → 委托 → reset（异常也 reset + 记录）。"""
         try:
-            return getattr(servicer, method)(*args, **kwargs)
-        finally:
-            reset_current_session(token)
+            return self._dispatcher.dispatch(plugin_id, method, *args, **kwargs)
+        except PluginDispatchError as e:
+            # 插件边界内异常：记录 plugin_id 后向上抛，由 gRPC 转为错误响应，
+            # 不杀 Runtime 内其它插件（方案第 7 节）。
+            raise
 
     def _dispatch_or_single(self, request, method, *args, **kwargs):
         """有 plugin_id 按多租户路由；空 plugin_id 退化为单插件（若仅一个）。"""
@@ -90,8 +114,36 @@ class MultiTenantPluginService(plugin_pb2_grpc.PluginServiceServicer):
     def Register(self, request, context):
         pid = _plugin_id_from_request(request)
         if pid:
-            return self._dispatch(pid, "Register", request, context)
+            resp = self._dispatch(pid, "Register", request, context)
+            # Register 内已 mark_registered；实例化在 Register 返回后进行
+            #（对齐单插件 server.py：instantiate 依赖宿主已完成身份绑定）。
+            if self._on_registered is not None:
+                try:
+                    self._on_registered(pid)
+                except Exception as e:  # noqa: BLE001
+                    logger.error("插件 %s Register 后实例化触发失败: %s", pid, e)
+            return resp
         return self._dispatch_or_single(request, "Register", context)
+
+    def ManagePlugin(self, request, context):
+        """共享 Runtime 成员管理（load/unload）；单插件进程返回 UNIMPLEMENTED。"""
+        import grpc as _grpc
+
+        if self._on_manage is None:
+            context.abort(
+                _grpc.StatusCode.UNIMPLEMENTED,
+                "ManagePlugin 仅在共享 Runtime（python-shared）支持",
+            )
+        action = getattr(request, "action", "") or ""
+        pid = getattr(request, "plugin_id", "") or ""
+        if not pid:
+            return _manage_err("ManagePlugin 需要 plugin_id")
+        try:
+            self._on_manage(request)
+            return _manage_ok()
+        except Exception as e:  # noqa: BLE001 -- 插件级失败不影响其它插件
+            logger.error("ManagePlugin(%s, %s) 失败: %s", action, pid, e)
+            return _manage_err(str(e))
 
     def HandleCommand(self, request, context):
         return self._dispatch_or_single(request, "HandleCommand", context)
@@ -149,7 +201,12 @@ class MultiTenantPluginService(plugin_pb2_grpc.PluginServiceServicer):
                     generation=int(s.generation),
                 )
             )
-        return plugin_pb2.HealthResponse(ok=True, load=0.0, version="", plugins=statuses)
+        hb = 0.0
+        if self._heartbeat is not None:
+            hb = float(self._heartbeat())
+        return plugin_pb2.HealthResponse(
+            ok=True, load=0.0, version="", plugins=statuses, runtime_heartbeat=hb
+        )
 
 
 class SharedRuntimeHost:
@@ -167,6 +224,9 @@ class SharedRuntimeHost:
         self._servicers: dict[str, PluginServiceServicer] = {}
         self._servicer_cls = PluginServiceServicer
         self.multi = None  # 绑定 gRPC server 时创建
+        # 插件健康 Watchdog：插件级失败计数 + 达到阈值上报 Go（方案第 6/9 节）。
+        self.watchdog = PluginWatchdog()
+        self.dispatcher = Dispatcher(self.registry, self._servicers, self.watchdog)
 
     def add_plugin(
         self,
@@ -198,9 +258,61 @@ class SharedRuntimeHost:
         """把多租户入口注册到 gRPC server，返回入口实例。"""
         from astrbot._bridge.gen import plugin_pb2_grpc
 
-        self.multi = MultiTenantPluginService(self.registry, self._servicers)
+        self.multi = MultiTenantPluginService(
+            self.registry,
+            self._servicers,
+            dispatcher=self.dispatcher,
+            on_registered=self.instantiate_async,
+            on_manage=self.manage_plugin,
+            heartbeat=self.watchdog.last_heartbeat,
+        )
         plugin_pb2_grpc.add_PluginServiceServicer_to_server(self.multi, server)
         return self.multi
+
+    def manage_plugin(self, request) -> None:
+        """ManagePlugin(load/unload) 处理：加载/卸载共享 Runtime 内单个插件。
+
+        load：add_plugin + load_plugin（import + mark_ready），随后宿主对该
+        plugin_id 调 Register，Register 完成后由 on_registered 触发 instantiate。
+        unload：unload_plugin（terminate + 清理 session），不影响其它插件。
+        """
+        action = (getattr(request, "action", "") or "").lower()
+        plugin_id = getattr(request, "plugin_id", "") or ""
+        if action == "load":
+            if self.registry.get(plugin_id) is None:
+                self.add_plugin(
+                    plugin_id,
+                    plugin_name=getattr(request, "plugin_name", "") or "",
+                    plugin_dir=getattr(request, "plugin_dir", "") or "",
+                    version=getattr(request, "version", "") or "",
+                )
+            self.load_plugin(plugin_id)
+        elif action == "unload":
+            self.unload_plugin(plugin_id)
+        else:
+            raise ValueError(f"未知的 ManagePlugin action: {action!r}")
+
+    def instantiate_async(self, plugin_id: str) -> None:
+        """Register 返回后异步实例化目标插件（不阻塞 Register 响应）。"""
+        import threading
+
+        session = self.registry.get(plugin_id)
+        if session is None:
+            return
+        metadata = session.instance
+        if metadata is None:
+            logger.error("插件 %s 无 metadata，跳过实例化", plugin_id)
+            return
+
+        def _run() -> None:
+            try:
+                self.instantiate(plugin_id, metadata)
+            except Exception as e:  # noqa: BLE001 -- 插件级失败不影响其它插件
+                logger.error("插件 %s Register 后实例化失败: %s", plugin_id, e)
+
+        threading.Thread(
+            target=_run, name=f"instantiate-{plugin_id}", daemon=True
+        ).start()
 
     def sessions(self) -> list[PluginSession]:
         return self.registry.all()
