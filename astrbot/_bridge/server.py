@@ -76,6 +76,7 @@ def main() -> int:
         progress.emit_phase("bridge_init")
         bootstrap.start_event_loop()
 
+        from astrbot._bridge.host import set_bridge
         from astrbot.core.star.context import set_host_bridge
 
         bridge = bootstrap.install_bridge()
@@ -200,6 +201,8 @@ def main() -> int:
         # stop(5)：给 in-flight RPC 5 秒宽限期完成，避免无宽限（stop(0)）立即
         # 终止导致宿主侧 RPC 中断/超时；先停 RPC 再停事件循环，顺序合理。
         server.stop(5)
+        from astrbot._bridge import loop as event_loop
+
         event_loop.stop()
         lifecycle.set(LifecycleStateMachine.STOPPED)
     return 0
